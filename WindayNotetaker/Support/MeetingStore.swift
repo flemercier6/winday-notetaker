@@ -25,11 +25,11 @@ final class MeetingStore {
 
     private var indexURL: URL { baseDirectory.appendingPathComponent("meetings.json") }
 
-    /// A fresh `.caf` URL for a new recording.
+    /// A fresh `.wav` URL for a new recording.
     func newRecordingURL(for meeting: Meeting) -> URL {
         recordingsDirectory
             .appendingPathComponent(meeting.id.uuidString)
-            .appendingPathExtension("caf")
+            .appendingPathExtension("wav")
     }
 
     func load() -> [Meeting] {

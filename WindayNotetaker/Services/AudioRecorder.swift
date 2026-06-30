@@ -43,7 +43,7 @@ final class AudioRecorder: NSObject, ObservableObject {
     private nonisolated let systemAudioFIFO = SampleFIFO()
     private var converter: AVAudioConverter?
 
-    /// Starts recording to `url` (a `.caf` file). Throws if capture can't start.
+    /// Starts recording to `url` (a `.wav` file). Throws if capture can't start.
     func start(to url: URL) async throws {
         guard !isRecording else { return }
 
@@ -132,7 +132,19 @@ final class AudioRecorder: NSObject, ObservableObject {
         // recordMixer (pre-mute), so the file still gets full-volume audio.
         engine.mainMixerNode.outputVolume = 0
 
-        let file = try AVAudioFile(forWriting: url, settings: mixFormat.settings)
+        // Write a standard 16-bit PCM WAV — Deepgram rejects CAF/float32 as
+        // "corrupt or unsupported". AVAudioFile converts the float tap buffers
+        // to Int16 on disk automatically (processing format stays float).
+        let wavSettings: [String: Any] = [
+            AVFormatIDKey: kAudioFormatLinearPCM,
+            AVSampleRateKey: mixFormat.sampleRate,
+            AVNumberOfChannelsKey: 2,
+            AVLinearPCMBitDepthKey: 16,
+            AVLinearPCMIsFloatKey: false,
+            AVLinearPCMIsBigEndianKey: false,
+            AVLinearPCMIsNonInterleaved: false,
+        ]
+        let file = try AVAudioFile(forWriting: url, settings: wavSettings)
         self.outputFile = file
 
         // Tap the dedicated record mixer (full mixed signal) and write to disk.

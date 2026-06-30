@@ -32,7 +32,7 @@ struct PipelineCoordinator {
 
         // 1) Upload audio + create the server row the functions operate on.
         onStage(.uploading)
-        let audioPath = "\(userId)/\(meeting.id.uuidString).caf"
+        let audioPath = "\(userId)/\(meeting.id.uuidString).wav"
         try await client.uploadRecording(fileURL: audioURL, to: audioPath)
         meeting.audioPath = audioPath
 

@@ -130,7 +130,7 @@ final class SupabaseClient: ObservableObject {
         req.httpMethod = "POST"
         req.setValue(anonKey, forHTTPHeaderField: "apikey")
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        req.setValue("audio/x-caf", forHTTPHeaderField: "Content-Type")
+        req.setValue("audio/wav", forHTTPHeaderField: "Content-Type")
         req.setValue("true", forHTTPHeaderField: "x-upsert")
 
         let fileData = try Data(contentsOf: fileURL)
