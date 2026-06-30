@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  App Sandbox is disabled for v1.
+
+	  ScreenCaptureKit system-audio capture works under the sandbox, but it
+	  makes the permission/entitlement story considerably more involved.
+	  Keeping the sandbox off keeps the first build simple. If you later
+	  distribute via the Mac App Store, re-enable the sandbox and add the
+	  appropriate temporary-exception / screen-capture entitlements.
+	-->
+	<key>com.apple.security.app-sandbox</key>
+	<false/>
+
+	<!-- Microphone access (your side of the call). -->
+	<key>com.apple.security.device.audio-input</key>
+	<true/>
+
+	<!-- Outbound HTTPS to Deepgram / Gemini / Notion. -->
+	<key>com.apple.security.network.client</key>
+	<true/>
+
+	<!-- Let the user pick where recordings/exports are saved. -->
+	<key>com.apple.security.files.user-selected.read-write</key>
+	<true/>
+</dict>
+</plist>

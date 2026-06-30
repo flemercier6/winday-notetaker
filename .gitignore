@@ -1,0 +1,29 @@
+# Xcode
+*.xcodeproj/*
+!*.xcodeproj/project.pbxproj
+xcuserdata/
+*.xcworkspace/xcuserdata/
+DerivedData/
+build/
+.build/
+
+# XcodeGen generates the project — keep it out of source control.
+WindayNotetaker.xcodeproj/
+
+# Secrets — never commit
+*.local.xcconfig
+Secrets.xcconfig
+.env
+
+# macOS
+.DS_Store
+
+# Swift Package Manager
+.swiftpm/
+Package.resolved
+
+# Recordings & local artifacts produced at runtime
+Recordings/
+*.m4a
+*.wav
+*.caf

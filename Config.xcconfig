@@ -1,0 +1,14 @@
+// Build-time configuration for WindayNotetaker.
+//
+// API keys are NOT stored here — enter them at runtime in the app's Settings
+// window (they are saved to the macOS Keychain). This file only holds
+// non-secret defaults that you may want to override per build.
+//
+// Copy nothing — this file is safe to commit. Do not put secrets in it.
+
+// Default model identifiers (overridable in Settings UI).
+DEEPGRAM_MODEL = nova-3
+GEMINI_MODEL = gemini-flash-latest
+
+// Notion API version pinned by the app.
+NOTION_API_VERSION = 2022-06-28
