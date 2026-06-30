@@ -32,6 +32,7 @@ final class AudioRecorder: NSObject, ObservableObject {
     private var stream: SCStream?
     private let engine = AVAudioEngine()
     private var sourceNode: AVAudioSourceNode?
+    private var recordMixer: AVAudioMixerNode?
     private var outputFile: AVAudioFile?
 
     /// Canonical mixing format: 48 kHz stereo float, matches SCStream output.
@@ -57,10 +58,11 @@ final class AudioRecorder: NSObject, ObservableObject {
         isRecording = false
         level = 0
 
-        engine.mainMixerNode.removeTap(onBus: 0)
+        recordMixer?.removeTap(onBus: 0)
         engine.stop()
         outputFile = nil
         sourceNode = nil
+        recordMixer = nil
 
         if let stream {
             try? await stream.stopCapture()
@@ -112,16 +114,29 @@ final class AudioRecorder: NSObject, ObservableObject {
         }
         self.sourceNode = source
 
-        engine.attach(source)
-        engine.connect(source, to: engine.mainMixerNode, format: mixFormat)
-        engine.connect(input, to: engine.mainMixerNode, format: micFormat)
+        // Dedicated mixer we TAP to write the file. Kept separate from
+        // mainMixerNode so we can mute the speakers (mainMixer) WITHOUT
+        // silencing the recording.
+        let recordMixer = AVAudioMixerNode()
+        self.recordMixer = recordMixer
 
-        let outFormat = engine.mainMixerNode.outputFormat(forBus: 0)
-        let file = try AVAudioFile(forWriting: url, settings: outFormat.settings)
+        engine.attach(source)
+        engine.attach(recordMixer)
+        engine.connect(source, to: recordMixer, format: mixFormat)
+        engine.connect(input, to: recordMixer, format: micFormat)
+        engine.connect(recordMixer, to: engine.mainMixerNode, format: mixFormat)
+
+        // CRITICAL: mute the hardware output. We only want to RECORD, not play
+        // the mix back through the speakers — otherwise the mic re-captures it
+        // and you get an echo / feedback loop. The tap below sits on
+        // recordMixer (pre-mute), so the file still gets full-volume audio.
+        engine.mainMixerNode.outputVolume = 0
+
+        let file = try AVAudioFile(forWriting: url, settings: mixFormat.settings)
         self.outputFile = file
 
-        // Tap the summed mix and write it to disk.
-        engine.mainMixerNode.installTap(onBus: 0, bufferSize: 4096, format: outFormat) { [weak self] buffer, _ in
+        // Tap the dedicated record mixer (full mixed signal) and write to disk.
+        recordMixer.installTap(onBus: 0, bufferSize: 4096, format: mixFormat) { [weak self] buffer, _ in
             try? self?.outputFile?.write(from: buffer)
             self?.updateLevel(from: buffer)
         }
