@@ -35,10 +35,11 @@ final class AudioRecorder: NSObject, ObservableObject {
     private var outputFile: AVAudioFile?
 
     /// Canonical mixing format: 48 kHz stereo float, matches SCStream output.
-    private let mixFormat = AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 2)!
+    /// `nonisolated` so the SCStream callback (a background queue) can read it.
+    private nonisolated let mixFormat = AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 2)!
 
     /// Thread-safe FIFO holding system-audio samples awaiting the render block.
-    private let systemAudioFIFO = SampleFIFO()
+    private nonisolated let systemAudioFIFO = SampleFIFO()
     private var converter: AVAudioConverter?
 
     /// Starts recording to `url` (a `.caf` file). Throws if capture can't start.
@@ -166,7 +167,7 @@ extension AudioRecorder: SCStreamOutput, SCStreamDelegate {
 /// Note: a lock-free ring buffer would be preferable for production audio; this
 /// is intentionally simple and good enough for a meeting recorder. The lock is
 /// only held for fast memcpy-style copies.
-private final class SampleFIFO {
+private final class SampleFIFO: @unchecked Sendable {
     private var buffer: [Float] = []
     private let lock = NSLock()
     private let channels = 2

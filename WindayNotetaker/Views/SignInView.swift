@@ -39,7 +39,7 @@ struct SignInView: View {
                 TextField("you@company.com", text: $email)
                     .textContentType(.username)
                 SecureField("Password (min. 6 characters)", text: $password)
-                    .textContentType(mode == .signIn ? .password : .newPassword)
+                    .textContentType(.password)
             }
             .textFieldStyle(.roundedBorder)
             .frame(width: 260)
