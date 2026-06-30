@@ -1,18 +1,21 @@
 import SwiftUI
 
-/// Email one-time-code sign-in. No password, no deep links: Supabase emails a
-/// 6-digit code, the user types it back. The resulting session is stored in the
-/// Keychain by `SupabaseClient`.
+/// Email + password sign-in / sign-up. Simple and reliable for a desktop app —
+/// no magic links, no email round-trip. The session is stored in the Keychain
+/// by `SupabaseClient`.
 struct SignInView: View {
     @EnvironmentObject private var client: SupabaseClient
     @EnvironmentObject private var model: AppViewModel
 
-    private enum Step { case email, code }
-    @State private var step: Step = .email
+    private enum Mode { case signIn, signUp }
+    @State private var mode: Mode = .signIn
     @State private var email = ""
-    @State private var code = ""
+    @State private var password = ""
     @State private var busy = false
     @State private var error: String?
+
+    private var title: String { mode == .signIn ? "Sign in" : "Create account" }
+    private var canSubmit: Bool { email.contains("@") && password.count >= 6 && !busy }
 
     var body: some View {
         VStack(spacing: 16) {
@@ -20,66 +23,54 @@ struct SignInView: View {
                 .font(.system(size: 48))
                 .foregroundStyle(.tint)
             Text("Winday Notetaker").font(.title2.bold())
-            Text("Sign in to record and summarize your meetings.")
+            Text("Record and summarize your meetings.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
 
-            switch step {
-            case .email:
-                TextField("you@company.com", text: $email)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 260)
-                Button(action: send) {
-                    Text(busy ? "Sending…" : "Email me a code")
-                        .frame(width: 240)
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(busy || !email.contains("@"))
-
-            case .code:
-                Text("Enter the code sent to \(email)")
-                    .font(.caption).foregroundStyle(.secondary)
-                TextField("123456", text: $code)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 160)
-                Button(action: verify) {
-                    Text(busy ? "Verifying…" : "Verify & sign in")
-                        .frame(width: 240)
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(busy || code.count < 6)
-                Button("Use a different email") { step = .email; code = "" }
-                    .buttonStyle(.link)
+            Picker("", selection: $mode) {
+                Text("Sign in").tag(Mode.signIn)
+                Text("Create account").tag(Mode.signUp)
             }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(width: 260)
+
+            VStack(spacing: 8) {
+                TextField("you@company.com", text: $email)
+                    .textContentType(.username)
+                SecureField("Password (min. 6 characters)", text: $password)
+                    .textContentType(mode == .signIn ? .password : .newPassword)
+            }
+            .textFieldStyle(.roundedBorder)
+            .frame(width: 260)
+            .onSubmit(submit)
+
+            Button(action: submit) {
+                Text(busy ? "Please wait…" : title).frame(width: 240)
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(!canSubmit)
 
             if let error {
                 Text(error).font(.caption).foregroundStyle(.red)
                     .multilineTextAlignment(.center)
+                    .frame(width: 300)
             }
         }
         .padding(40)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    private func send() {
+    private func submit() {
+        guard canSubmit else { return }
         busy = true; error = nil
+        let email = self.email.trimmingCharacters(in: .whitespaces)
         Task {
             do {
-                try await client.sendOTP(email: email.trimmingCharacters(in: .whitespaces))
-                step = .code
-            } catch {
-                self.error = error.localizedDescription
-            }
-            busy = false
-        }
-    }
-
-    private func verify() {
-        busy = true; error = nil
-        Task {
-            do {
-                try await client.verifyOTP(email: email.trimmingCharacters(in: .whitespaces),
-                                           code: code.trimmingCharacters(in: .whitespaces))
+                switch mode {
+                case .signIn: try await client.signIn(email: email, password: password)
+                case .signUp: try await client.signUp(email: email, password: password)
+                }
                 await model.syncSettings()
             } catch {
                 self.error = error.localizedDescription

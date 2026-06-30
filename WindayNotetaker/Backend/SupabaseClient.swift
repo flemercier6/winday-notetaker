@@ -46,25 +46,40 @@ final class SupabaseClient: ObservableObject {
         self.session = Self.loadSession()
     }
 
-    // MARK: - Auth (email magic-code / OTP)
+    // MARK: - Auth (email + password)
 
-    /// Sends a 6-digit one-time code to `email` (also creates the user if new).
-    func sendOTP(email: String) async throws {
-        try await request(
-            path: "/auth/v1/otp",
-            body: ["email": email, "create_user": true],
+    /// Creates an account. If email confirmation is disabled on the project
+    /// (recommended for this desktop app), the response includes a session and
+    /// the user is signed in immediately.
+    func signUp(email: String, password: String) async throws {
+        let data = try await request(
+            path: "/auth/v1/signup",
+            body: ["email": email, "password": password],
             authenticated: false
+        )
+        try storeSession(
+            from: data,
+            fallback: "Account created, but email confirmation is on. Disable it in Supabase (Authentication → Providers → Email → Confirm email) or confirm via the email, then sign in."
         )
     }
 
-    /// Verifies the OTP code and stores the resulting session.
-    func verifyOTP(email: String, code: String) async throws {
+    /// Signs in with email + password.
+    func signIn(email: String, password: String) async throws {
         let data = try await request(
-            path: "/auth/v1/verify",
-            body: ["type": "email", "email": email, "token": code],
+            path: "/auth/v1/token?grant_type=password",
+            body: ["email": email, "password": password],
             authenticated: false
         )
-        let token = try JSONDecoder().decode(TokenResponse.self, from: data)
+        try storeSession(from: data, fallback: "Sign-in failed — check your email and password.")
+    }
+
+    /// Decodes a session from a GoTrue auth response and persists it. Throws a
+    /// friendly error when the response carries no token (e.g. confirmation on).
+    private func storeSession(from data: Data, fallback: String) throws {
+        guard let token = try? JSONDecoder().decode(TokenResponse.self, from: data),
+              !token.access_token.isEmpty else {
+            throw ClientError.http(200, fallback)
+        }
         let session = Session(
             accessToken: token.access_token,
             refreshToken: token.refresh_token,
