@@ -16,11 +16,13 @@ import Combine
 final class AudioRecorder: NSObject, ObservableObject {
     enum RecorderError: LocalizedError {
         case noDisplay
+        case micDenied
         case engineFailed(String)
 
         var errorDescription: String? {
             switch self {
             case .noDisplay: return "No display available to capture system audio from."
+            case .micDenied: return "Microphone access is off. Enable it in System Settings → Privacy & Security → Microphone, then try again."
             case let .engineFailed(m): return "Audio engine failed to start: \(m)"
             }
         }
@@ -46,6 +48,12 @@ final class AudioRecorder: NSObject, ObservableObject {
     /// Starts recording to `url` (a `.wav` file). Throws if capture can't start.
     func start(to url: URL) async throws {
         guard !isRecording else { return }
+
+        // macOS only feeds live microphone audio once the user has authorized
+        // it. Without this explicit request, the input node silently yields
+        // zeros and you get a silent recording (no transcript).
+        let micGranted = await AVCaptureDevice.requestAccess(for: .audio)
+        guard micGranted else { throw RecorderError.micDenied }
 
         try await startSystemAudioCapture()
         try startEngine(writingTo: url)
