@@ -1,61 +1,50 @@
 import Foundation
 import Combine
 
-/// App configuration: secrets (Keychain) + non-secret settings (UserDefaults +
-/// Info.plist defaults from Config.xcconfig).
+/// App configuration.
 ///
-/// `@Published` so SwiftUI views (Settings) react to changes.
+/// IMPORTANT: no third-party API secrets live here anymore. Deepgram, Gemini and
+/// Notion keys are stored server-side as Supabase Edge Function secrets. The app
+/// only knows the Supabase URL + publishable key (both safe to ship — access is
+/// gated by Supabase Auth + Row Level Security) and non-secret per-user prefs.
 final class Config: ObservableObject {
     static let shared = Config()
 
-    // MARK: Keychain-backed secrets
+    // MARK: Supabase connection (publishable, from Info.plist)
 
-    @Published var deepgramAPIKey: String {
-        didSet { Keychain.set(deepgramAPIKey, for: "deepgram_api_key") }
-    }
-    @Published var geminiAPIKey: String {
-        didSet { Keychain.set(geminiAPIKey, for: "gemini_api_key") }
-    }
-    @Published var notionToken: String {
-        didSet { Keychain.set(notionToken, for: "notion_token") }
-    }
+    let supabaseURL: String
+    let supabaseAnonKey: String
 
-    // MARK: UserDefaults-backed settings
+    // MARK: Non-secret per-user settings (UserDefaults; mirrored to user_settings)
 
     /// Notion database (data source) ID where summaries are created as pages.
     @Published var notionDatabaseID: String {
         didSet { defaults.set(notionDatabaseID, forKey: "notion_database_id") }
     }
-
-    // MARK: Info.plist defaults (from Config.xcconfig, overridable)
-
     @Published var deepgramModel: String {
         didSet { defaults.set(deepgramModel, forKey: "deepgram_model") }
     }
     @Published var geminiModel: String {
         didSet { defaults.set(geminiModel, forKey: "gemini_model") }
     }
-
-    let notionAPIVersion: String
+    @Published var autoExportToNotion: Bool {
+        didSet { defaults.set(autoExportToNotion, forKey: "auto_export_notion") }
+    }
 
     private let defaults = UserDefaults.standard
 
     private init() {
-        deepgramAPIKey = Keychain.get("deepgram_api_key") ?? ""
-        geminiAPIKey = Keychain.get("gemini_api_key") ?? ""
-        notionToken = Keychain.get("notion_token") ?? ""
-        notionDatabaseID = defaults.string(forKey: "notion_database_id") ?? ""
-
         let plist = Bundle.main.infoDictionary ?? [:]
+        supabaseURL = (plist["WNSupabaseURL"] as? String) ?? ""
+        supabaseAnonKey = (plist["WNSupabaseAnonKey"] as? String) ?? ""
+
+        notionDatabaseID = defaults.string(forKey: "notion_database_id") ?? ""
         deepgramModel = defaults.string(forKey: "deepgram_model")
             ?? (plist["WNDeepgramModel"] as? String) ?? "nova-3"
         geminiModel = defaults.string(forKey: "gemini_model")
             ?? (plist["WNGeminiModel"] as? String) ?? "gemini-flash-latest"
-        notionAPIVersion = (plist["WNNotionAPIVersion"] as? String) ?? "2022-06-28"
+        autoExportToNotion = defaults.bool(forKey: "auto_export_notion")
     }
 
-    /// True when the minimum keys to run the full pipeline are present.
-    var isTranscriptionConfigured: Bool { !deepgramAPIKey.isEmpty }
-    var isSummaryConfigured: Bool { !geminiAPIKey.isEmpty }
-    var isNotionConfigured: Bool { !notionToken.isEmpty && !notionDatabaseID.isEmpty }
+    var isNotionConfigured: Bool { !notionDatabaseID.isEmpty }
 }

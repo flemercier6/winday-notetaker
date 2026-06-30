@@ -22,6 +22,9 @@ struct Meeting: Identifiable, Codable, Equatable {
     var endedAt: Date?
     /// Local file URL of the mixed (mic + system) audio recording.
     var audioFileURL: URL?
+    /// Storage path of the uploaded recording in the Supabase `recordings`
+    /// bucket (e.g. "<userId>/<meetingId>.caf").
+    var audioPath: String?
     var transcript: Transcript?
     var summary: MeetingSummary?
     /// URL of the Notion page once exported.

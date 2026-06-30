@@ -1,19 +1,19 @@
 import SwiftUI
 
-/// Main two-column window: meeting history on the left, details on the right,
-/// with a record control in the toolbar.
+/// Root view. Shows the sign-in screen until authenticated, then the main
+/// two-column window: meeting history on the left, details on the right.
 struct ContentView: View {
     @EnvironmentObject private var model: AppViewModel
-    @EnvironmentObject private var config: Config
+    @EnvironmentObject private var client: SupabaseClient
 
     var body: some View {
-        NavigationSplitView {
-            sidebar
-                .frame(minWidth: 260)
-        } detail: {
-            detail
+        Group {
+            if client.isAuthenticated {
+                mainWindow
+            } else {
+                SignInView()
+            }
         }
-        .toolbar { toolbarContent }
         .alert("Something went wrong",
                isPresented: Binding(get: { model.errorMessage != nil },
                                     set: { if !$0 { model.errorMessage = nil } })) {
@@ -21,6 +21,16 @@ struct ContentView: View {
         } message: {
             Text(model.errorMessage ?? "")
         }
+    }
+
+    private var mainWindow: some View {
+        NavigationSplitView {
+            sidebar
+                .frame(minWidth: 260)
+        } detail: {
+            detail
+        }
+        .toolbar { toolbarContent }
     }
 
     // MARK: Sidebar
@@ -60,11 +70,19 @@ struct ContentView: View {
         if let meeting = model.selectedMeeting {
             SummaryView(meeting: meeting)
         } else {
-            ContentUnavailableView(
-                "Select a meeting",
-                systemImage: "doc.text.magnifyingglass",
-                description: Text("Your summary, next steps and priorities will appear here.")
-            )
+            // Custom placeholder (ContentUnavailableView is macOS 14+).
+            VStack(spacing: 10) {
+                Image(systemName: "doc.text.magnifyingglass")
+                    .font(.system(size: 40))
+                    .foregroundStyle(.secondary)
+                Text("Select a meeting").font(.title3.weight(.semibold))
+                Text("Your summary, next steps and priorities will appear here.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+            }
+            .padding(40)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 
@@ -94,10 +112,7 @@ struct ContentView: View {
                 } label: {
                     Label("Record", systemImage: "record.circle")
                 }
-                .disabled(!config.isTranscriptionConfigured)
-                .help(config.isTranscriptionConfigured
-                      ? "Start recording the current call"
-                      : "Add a Deepgram API key in Settings first")
+                .help("Start recording the current call")
             }
         }
     }

@@ -1,0 +1,10 @@
+project_id = "jruoxnwhmgmajbzsjsjw"
+
+[functions.transcribe]
+verify_jwt = true
+
+[functions.summarize]
+verify_jwt = true
+
+[functions.export-notion]
+verify_jwt = true

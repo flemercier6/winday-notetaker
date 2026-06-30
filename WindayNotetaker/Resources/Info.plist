@@ -29,12 +29,16 @@
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Winday Notetaker records your microphone so your side of the meeting is included in the transcript.</string>
 
-	<!-- Non-secret defaults injected from Config.xcconfig. -->
+	<!-- Supabase backend (publishable values — safe to ship; protected by RLS). -->
+	<key>WNSupabaseURL</key>
+	<string>https://jruoxnwhmgmajbzsjsjw.supabase.co</string>
+	<key>WNSupabaseAnonKey</key>
+	<string>sb_publishable_UfnM18x2iFdmIzOscmSTxQ_q9fHUvrl</string>
+
+	<!-- Non-secret model defaults injected from Config.xcconfig. -->
 	<key>WNDeepgramModel</key>
 	<string>$(DEEPGRAM_MODEL)</string>
 	<key>WNGeminiModel</key>
 	<string>$(GEMINI_MODEL)</string>
-	<key>WNNotionAPIVersion</key>
-	<string>$(NOTION_API_VERSION)</string>
 </dict>
 </plist>
