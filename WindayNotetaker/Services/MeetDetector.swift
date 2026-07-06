@@ -1,20 +1,28 @@
 import Foundation
 import AppKit
 import CoreGraphics
+import CoreAudio
 import Combine
 
-/// Detects whether a Google Meet call is currently open in a browser window.
-///
-/// It scans on-screen window titles (via the CoreGraphics window list) for a
-/// Meet tab owned by a known browser. This powers the "a Meet call is in
-/// progress" hint and optional auto-start. It is a heuristic — Meet is web-only,
-/// so there is no app to detect directly.
+/// Detects whether a Google Meet call is happening, so the floating recorder
+/// popup can appear on its own. Two signals:
+///   1. A browser window whose title looks like a Meet tab (also gives us the
+///      window id to scope audio capture to that app).
+///   2. The default microphone being "in use" by some process (CoreAudio),
+///      which fires when Meet grabs the mic.
 @MainActor
 final class MeetDetector: ObservableObject {
     /// True when a Google Meet window is detected on screen.
     @Published private(set) var isMeetActive = false
-    /// The browser app hosting Meet, if found (useful for app-scoped capture).
+    /// True when the default input device is running (mic open somewhere).
+    @Published private(set) var micInUse = false
+    /// Window id of the detected Meet tab (for app-scoped audio capture).
+    @Published private(set) var meetWindowID: CGWindowID?
+    /// The browser app hosting Meet, if found.
     @Published private(set) var hostBrowserBundleID: String?
+
+    /// True when we think a meeting is starting — used to show the popup.
+    var meetingLikely: Bool { isMeetActive || micInUse }
 
     private var timer: Timer?
 
@@ -28,7 +36,7 @@ final class MeetDetector: ObservableObject {
         "company.thebrowser.Browser", // Arc
     ]
 
-    func startMonitoring(interval: TimeInterval = 4) {
+    func startMonitoring(interval: TimeInterval = 3) {
         stopMonitoring()
         refresh()
         timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
@@ -41,12 +49,16 @@ final class MeetDetector: ObservableObject {
         timer = nil
     }
 
-    /// One-shot scan of on-screen windows for a Meet tab.
+    /// One-shot scan of on-screen windows + mic state.
     func refresh() {
+        micInUse = Self.isDefaultInputRunning()
+        scanForMeetWindow()
+    }
+
+    private func scanForMeetWindow() {
         let options: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
         guard let windows = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else {
-            isMeetActive = false
-            hostBrowserBundleID = nil
+            isMeetActive = false; meetWindowID = nil; hostBrowserBundleID = nil
             return
         }
 
@@ -62,15 +74,41 @@ final class MeetDetector: ObservableObject {
                   browserBundleIDs.contains(bundleID)
             else { continue }
 
-            // Meet tab titles look like "Meet - abc-defg-hij" or include "Google Meet".
             if name.localizedCaseInsensitiveContains("meet") {
                 isMeetActive = true
                 hostBrowserBundleID = bundleID
+                meetWindowID = (window[kCGWindowNumber as String] as? NSNumber)?.uint32Value
                 return
             }
         }
 
         isMeetActive = false
+        meetWindowID = nil
         hostBrowserBundleID = nil
+    }
+
+    // MARK: - CoreAudio: is the default input device running somewhere?
+
+    private static func isDefaultInputRunning() -> Bool {
+        var deviceID = AudioDeviceID(0)
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        var defaultAddr = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultInputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain)
+        guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject),
+                                         &defaultAddr, 0, nil, &size, &deviceID) == noErr,
+              deviceID != 0 else { return false }
+
+        var running: UInt32 = 0
+        var runSize = UInt32(MemoryLayout<UInt32>.size)
+        var runAddr = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyDeviceIsRunningSomewhere,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain)
+        guard AudioObjectGetPropertyData(deviceID, &runAddr, 0, nil, &runSize, &running) == noErr else {
+            return false
+        }
+        return running != 0
     }
 }

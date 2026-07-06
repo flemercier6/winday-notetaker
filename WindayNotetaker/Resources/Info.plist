@@ -25,6 +25,10 @@
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.productivity</string>
 
+	<!-- Menu-bar agent: no Dock icon, no main window. -->
+	<key>LSUIElement</key>
+	<true/>
+
 	<!-- Permission usage strings (required or the app crashes on first request). -->
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Winday Notetaker records your microphone so your side of the meeting is included in the transcript.</string>

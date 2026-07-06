@@ -36,6 +36,10 @@ final class AudioRecorder: NSObject, ObservableObject {
     @Published private(set) var isRecording = false
     @Published private(set) var level: Float = 0   // 0...1 rough input level for the UI
 
+    /// When set, capture only this window's app audio (the Google Meet tab's
+    /// browser) instead of the whole display. Set before calling `start`.
+    var targetWindowID: CGWindowID?
+
     private var stream: SCStream?
     private var engine: AVAudioEngine?
     private var mixer: FileMixer?
@@ -87,10 +91,18 @@ final class AudioRecorder: NSObject, ObservableObject {
     private func startSystemAudioCapture() async throws {
         let content = try await SCShareableContent.excludingDesktopWindows(false,
                                                                            onScreenWindowsOnly: false)
-        guard let display = content.displays.first else { throw RecorderError.noDisplay }
 
-        // Capture audio for the whole display (includes the Google Meet tab).
-        let filter = SCContentFilter(display: display, excludingApplications: [], exceptingWindows: [])
+        // Prefer capturing just the meeting window's app audio; fall back to the
+        // whole display if we don't have a specific target.
+        let filter: SCContentFilter
+        if let targetWindowID,
+           let window = content.windows.first(where: { $0.windowID == targetWindowID }) {
+            filter = SCContentFilter(desktopIndependentWindow: window)
+        } else if let display = content.displays.first {
+            filter = SCContentFilter(display: display, excludingApplications: [], exceptingWindows: [])
+        } else {
+            throw RecorderError.noDisplay
+        }
 
         let config = SCStreamConfiguration()
         config.capturesAudio = true
@@ -161,25 +173,32 @@ extension AudioRecorder: SCStreamOutput, SCStreamDelegate {
 
 // MARK: - File mixer (runs on the mic tap thread)
 
-/// Owns the output file and the mic→mix converter. For each microphone buffer it
-/// converts to 48 kHz stereo, sums in the matching system audio pulled from the
-/// FIFO, and writes one buffer to disk. Lives off the main actor because the mic
-/// tap calls it on a real-time audio thread.
+/// Owns the output file and the mic converter. For each microphone buffer it
+/// converts the mic to 48 kHz mono, pulls the matching system audio from the
+/// FIFO, and writes a STEREO frame where the left channel is your mic and the
+/// right channel is the meeting audio. Keeping the two on separate channels lets
+/// Deepgram (multichannel) attribute "You" vs "the others" with certainty, while
+/// diarization still splits multiple remote participants on the right channel.
+/// Lives off the main actor because the mic tap calls it on a real-time thread.
 private final class FileMixer: @unchecked Sendable {
     var onLevel: (@Sendable (Float) -> Void)?
 
     private let file: AVAudioFile
-    private let mixFormat: AVAudioFormat
-    private let converter: AVAudioConverter?
+    private let stereoFormat: AVAudioFormat
+    private let monoFormat: AVAudioFormat
+    private let micToMono: AVAudioConverter?
     private let fifo: SampleFIFO
     private let lock = NSLock()
     private var closed = false
 
     init(url: URL, micFormat: AVAudioFormat, mixFormat: AVAudioFormat, fifo: SampleFIFO) throws {
-        self.mixFormat = mixFormat
         self.fifo = fifo
-        self.converter = micFormat == mixFormat ? nil : AVAudioConverter(from: micFormat, to: mixFormat)
+        self.stereoFormat = mixFormat
+        let mono = AVAudioFormat(standardFormatWithSampleRate: mixFormat.sampleRate, channels: 1)!
+        self.monoFormat = mono
+        self.micToMono = micFormat == mono ? nil : AVAudioConverter(from: micFormat, to: mono)
 
+        // Stereo 16-bit WAV: left = your mic, right = the meeting audio.
         let wavSettings: [String: Any] = [
             AVFormatIDKey: kAudioFormatLinearPCM,
             AVSampleRateKey: mixFormat.sampleRate,
@@ -197,44 +216,47 @@ private final class FileMixer: @unchecked Sendable {
     }
 
     func writeMic(_ micBuffer: AVAudioPCMBuffer) {
-        // 1) Convert the mic buffer to 48 kHz stereo float.
-        let stereo: AVAudioPCMBuffer
-        if let converter {
-            let ratio = mixFormat.sampleRate / micBuffer.format.sampleRate
+        // 1) Mic → 48 kHz mono.
+        let mono: AVAudioPCMBuffer
+        if let micToMono {
+            let ratio = monoFormat.sampleRate / micBuffer.format.sampleRate
             let capacity = AVAudioFrameCount(Double(micBuffer.frameLength) * ratio) + 1024
-            guard let out = AVAudioPCMBuffer(pcmFormat: mixFormat, frameCapacity: capacity) else { return }
+            guard let out = AVAudioPCMBuffer(pcmFormat: monoFormat, frameCapacity: capacity) else { return }
             var fed = false
             var error: NSError?
-            converter.convert(to: out, error: &error) { _, status in
+            micToMono.convert(to: out, error: &error) { _, status in
                 if fed { status.pointee = .noDataNow; return nil }
                 fed = true
                 status.pointee = .haveData
                 return micBuffer
             }
             if error != nil { return }
-            stereo = out
+            mono = out
         } else {
-            stereo = micBuffer
+            mono = micBuffer
         }
 
-        let frames = Int(stereo.frameLength)
-        guard frames > 0, let chans = stereo.floatChannelData else { return }
-        let hasRight = stereo.format.channelCount > 1
-        let left = chans[0]
-        let right = hasRight ? chans[1] : chans[0]
+        let frames = Int(mono.frameLength)
+        guard frames > 0, let micData = mono.floatChannelData?[0] else { return }
 
-        // 2) Pull the matching amount of system audio (interleaved stereo).
+        // 2) Pull matching system audio (interleaved stereo) and downmix to mono.
         var sys = [Float](repeating: 0, count: frames * 2)
         fifo.dequeue(into: &sys, frames: frames)
 
-        // 3) Sum mic + system in place, clamped to [-1, 1], and track the level.
+        // 3) Compose the stereo output: L = you (mic), R = the meeting.
+        guard let stereo = AVAudioPCMBuffer(pcmFormat: stereoFormat, frameCapacity: AVAudioFrameCount(frames)),
+              let left = stereo.floatChannelData?[0],
+              stereo.format.channelCount > 1,
+              let right = stereo.floatChannelData?[1] else { return }
+        stereo.frameLength = AVAudioFrameCount(frames)
+
         var peak: Float = 0
         for i in 0..<frames {
-            let l = max(-1, min(1, left[i] + sys[i * 2]))
-            let r = max(-1, min(1, right[i] + sys[i * 2 + 1]))
-            left[i] = l
-            if hasRight { right[i] = r }
-            let a = max(abs(l), abs(r))
+            let you = max(-1, min(1, micData[i]))
+            let them = max(-1, min(1, 0.5 * (sys[i * 2] + sys[i * 2 + 1])))
+            left[i] = you
+            right[i] = them
+            let a = max(abs(you), abs(them))
             if a > peak { peak = a }
         }
 

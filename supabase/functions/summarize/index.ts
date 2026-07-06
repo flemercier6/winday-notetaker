@@ -65,14 +65,14 @@ Deno.serve(async (req) => {
     const model = settings?.gemini_model || "gemini-flash-latest";
 
     const labelled = meeting.transcript.utterances
-      .map((u: any) => `Speaker ${u.speaker}: ${u.text}`).join("\n");
+      .map((u: any) => `${u.speaker}: ${u.text}`).join("\n");
 
     const prompt = `You are an expert sales/meeting assistant for Winday CRM. Analyze the ` +
-      `following speaker-diarized meeting transcript and produce structured notes. ` +
-      `The user is "Speaker 0" unless context clearly says otherwise. Be concise and ` +
-      `action-oriented. For next_steps, infer the owner when possible and assign a ` +
-      `realistic priority. Write in the same language as the transcript.\n\n` +
-      `Meeting title: ${meeting.title}\n\nTRANSCRIPT:\n${labelled}`;
+      `following meeting transcript and produce structured notes. The speaker labelled ` +
+      `"You" is the app's user; "Participant 1/2/…" are the other attendees. Be concise ` +
+      `and action-oriented. For next_steps, infer the owner when possible (the user vs a ` +
+      `participant) and assign a realistic priority. Write in the same language as the ` +
+      `transcript.\n\nMeeting title: ${meeting.title}\n\nTRANSCRIPT:\n${labelled}`;
 
     const resp = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,

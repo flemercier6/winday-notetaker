@@ -1,26 +1,30 @@
 import SwiftUI
+import AppKit
 
 @main
 struct WindayNotetakerApp: App {
-    @StateObject private var model = AppViewModel()
-    @StateObject private var config = Config.shared
-    @StateObject private var client = SupabaseClient.shared
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     var body: some Scene {
-        WindowGroup {
-            ContentView()
-                .environmentObject(model)
-                .environmentObject(config)
-                .environmentObject(client)
-                .frame(minWidth: 880, minHeight: 560)
+        MenuBarExtra("Winday Notetaker", systemImage: "waveform.circle.fill") {
+            MenuBarContent()
         }
-        .windowToolbarStyle(.unified)
 
         Settings {
             SettingsView()
-                .environmentObject(config)
-                .environmentObject(client)
-                .environmentObject(model)
+                .environmentObject(Config.shared)
+                .environmentObject(SupabaseClient.shared)
+                .environmentObject(AppViewModel.shared)
         }
+    }
+}
+
+/// Runs the app as a background agent: no Dock icon (LSUIElement), no main
+/// window. The floating recorder popup + menu bar are the whole UI.
+@MainActor
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        NSApp.setActivationPolicy(.accessory)
+        AppViewModel.shared.beginAgent()
     }
 }

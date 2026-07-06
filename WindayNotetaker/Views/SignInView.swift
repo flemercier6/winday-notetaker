@@ -57,8 +57,7 @@ struct SignInView: View {
                     .frame(width: 300)
             }
         }
-        .padding(40)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(8)
     }
 
     private func submit() {

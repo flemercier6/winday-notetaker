@@ -1,8 +1,12 @@
 // transcribe — uploads a recorded meeting's audio to Deepgram (Nova-3) and
-// stores the diarized transcript on the meeting row.
+// stores the transcript.
 //
-// The Deepgram API key lives ONLY here, as the `DEEPGRAM_API_KEY` Edge Function
-// secret. It is never shipped to the macOS app.
+// The recording is a stereo WAV where channel 0 is the user's mic and channel 1
+// is the meeting audio. We use `multichannel=true` so Deepgram transcribes each
+// channel independently (channel 0 = "You", channel 1 = the others), plus
+// `diarize=true` so multiple remote participants on channel 1 are split too.
+//
+// The Deepgram API key lives ONLY here, as the `DEEPGRAM_API_KEY` secret.
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const cors = {
@@ -22,7 +26,6 @@ Deno.serve(async (req) => {
   try {
     if (!DEEPGRAM_API_KEY) return json({ error: "DEEPGRAM_API_KEY secret is not set." }, 500);
 
-    // Authenticate the caller from their JWT.
     const authHeader = req.headers.get("Authorization") ?? "";
     const userClient = createClient(SUPABASE_URL, ANON_KEY, {
       global: { headers: { Authorization: authHeader } },
@@ -33,7 +36,6 @@ Deno.serve(async (req) => {
     const admin = createClient(SUPABASE_URL, SERVICE_KEY);
     const { meeting_id } = await req.json();
 
-    // Load the meeting (scoped to the caller) + their model preference.
     const { data: meeting, error: mErr } = await admin
       .from("meetings").select("*").eq("id", meeting_id).eq("user_id", user.id).single();
     if (mErr || !meeting) return json({ error: "Meeting not found" }, 404);
@@ -43,15 +45,19 @@ Deno.serve(async (req) => {
       .from("user_settings").select("deepgram_model").eq("user_id", user.id).maybeSingle();
     const model = settings?.deepgram_model || "nova-3";
 
-    // Short-lived signed URL so Deepgram can fetch the private recording.
     const { data: signed, error: sErr } = await admin.storage
       .from("recordings").createSignedUrl(meeting.audio_path, 600);
     if (sErr || !signed) return json({ error: "Could not sign audio URL" }, 500);
 
     const dgUrl = new URL("https://api.deepgram.com/v1/listen");
     for (const [k, v] of Object.entries({
-      model, smart_format: "true", punctuate: "true",
-      diarize: "true", utterances: "true", detect_language: "true",
+      model,
+      multichannel: "true",
+      diarize: "true",
+      punctuate: "true",
+      utterances: "true",
+      smart_format: "true",
+      detect_language: "true",
     })) dgUrl.searchParams.set(k, v);
 
     const dgResp = await fetch(dgUrl, {
@@ -62,19 +68,25 @@ Deno.serve(async (req) => {
     if (!dgResp.ok) return json({ error: `Deepgram ${dgResp.status}: ${await dgResp.text()}` }, 502);
 
     const dg = await dgResp.json();
-    const channel = dg?.results?.channels?.[0];
-    const alt = channel?.alternatives?.[0];
-    const utterances = (dg?.results?.utterances ?? []).map((u: any) => ({
-      speaker: u.speaker ?? 0, text: u.transcript, start: u.start, end: u.end,
-    }));
-    const transcript = {
-      fullText: alt?.transcript ?? "",
-      utterances,
-      language: channel?.detected_language ?? null,
-    };
+
+    // Build labelled utterances. Channel 0 = you, channel 1 = the meeting
+    // (diarized into Participant 1, 2, …).
+    const raw = (dg?.results?.utterances ?? []).slice().sort(
+      (a: any, b: any) => (a.start ?? 0) - (b.start ?? 0));
+    const utterances = raw.map((u: any) => ({
+      speaker: (u.channel ?? 0) === 0 ? "You" : `Participant ${(u.speaker ?? 0) + 1}`,
+      text: u.transcript ?? "",
+      start: u.start ?? 0,
+      end: u.end ?? 0,
+    })).filter((u: any) => u.text.trim().length > 0);
+
+    const fullText = utterances.map((u: any) => u.text).join(" ");
+    const language = dg?.results?.channels?.[0]?.detected_language ?? null;
+
+    const transcript = { fullText, utterances, language };
 
     await admin.from("meetings").update({
-      transcript, language: transcript.language, status: "summarizing", error_message: null,
+      transcript, language, status: "summarizing", error_message: null,
     }).eq("id", meeting_id).eq("user_id", user.id);
 
     return json({ transcript });
