@@ -9,6 +9,7 @@ struct RecorderPopup: View {
     @EnvironmentObject private var client: SupabaseClient
 
     @State private var collapsed = false
+    @State private var isHovering = false
 
     // Palette from the Figma node.
     private let accent = Color(red: 0.0, green: 0.47, blue: 1.0)          // #0077FF
@@ -25,10 +26,33 @@ struct RecorderPopup: View {
             .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(cardBorder))
             .padding(4)
             .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(alignment: .topLeading) {
+                if isHovering {
+                    closeBadge.offset(x: -6, y: -6).transition(.opacity)
+                }
+            }
+            .padding(8)
             .fixedSize()
+            .onHover { hovering in isHovering = hovering }
+            .animation(.easeInOut(duration: 0.12), value: isHovering)
             .onChange(of: model.isRecording) { recording in
                 if recording { collapsed = false }
             }
+    }
+
+    /// Small circular close button shown on hover — dismisses the popup (e.g.
+    /// when the user doesn't want to record this meeting).
+    private var closeBadge: some View {
+        Button { model.hidePopup() } label: {
+            Image(systemName: "xmark")
+                .font(.system(size: 8, weight: .bold))
+                .foregroundStyle(.white)
+                .frame(width: 18, height: 18)
+                .background(Circle().fill(Color.black.opacity(0.6)))
+                .overlay(Circle().strokeBorder(Color.white.opacity(0.7), lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+        .help("Close")
     }
 
     @ViewBuilder
