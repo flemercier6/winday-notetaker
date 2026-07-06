@@ -1,14 +1,12 @@
 import SwiftUI
 
-/// Compact floating pill styled after the Winday CRM Figma design: a light
-/// off-white card in a frosted translucent container, with a blue split button.
-/// States: sign in → ready → recording (Stop & summarize / Discard / Collapse)
-/// → processing → done (auto-dismisses).
+/// Top-center floating pill (Figma-styled). States: sign in → ready (Start) →
+/// recording (audio visualizer + "–" to hide). Progress/done/failure live in the
+/// separate bottom-right ProgressPopup.
 struct RecorderPopup: View {
     @EnvironmentObject private var model: AppViewModel
     @EnvironmentObject private var client: SupabaseClient
 
-    @State private var collapsed = false
     @State private var isHovering = false
 
     // Palette from the Figma node.
@@ -27,21 +25,68 @@ struct RecorderPopup: View {
             .padding(4)
             .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             .overlay(alignment: .topLeading) {
-                if isHovering {
+                if isHovering && !model.isRecording {
                     closeBadge.offset(x: -6, y: -6).transition(.opacity)
                 }
             }
             .padding(8)
             .fixedSize()
-            .onHover { hovering in isHovering = hovering }
+            .onHover { isHovering = $0 }
             .animation(.easeInOut(duration: 0.12), value: isHovering)
-            .onChange(of: model.isRecording) { recording in
-                if recording { collapsed = false }
-            }
     }
 
-    /// Small circular close button shown on hover — dismisses the popup (e.g.
-    /// when the user doesn't want to record this meeting).
+    @ViewBuilder
+    private var row: some View {
+        if !client.isAuthenticated {
+            SignInView().frame(width: 300)
+        } else if model.isRecording {
+            recordingRow
+        } else {
+            readyRow
+        }
+    }
+
+    // MARK: Ready
+
+    private var readyRow: some View {
+        HStack(spacing: 40) {
+            HStack(spacing: 12) {
+                Image("WindayLogo")
+                    .resizable().renderingMode(.template).scaledToFit()
+                    .foregroundStyle(ink).frame(width: 24, height: 24)
+                Text("Start AI Meeting Note")
+                    .font(.system(size: 15, weight: .regular)).foregroundStyle(ink)
+            }
+            SplitButton(title: "Start Transcribing", accent: accent) {
+                Task { await model.startRecording() }
+            } menu: {
+                Button("Hide") { model.hidePopup() }
+            }
+        }
+    }
+
+    // MARK: Recording — visualizer + hide
+
+    private var recordingRow: some View {
+        HStack(spacing: 12) {
+            RecordingDot()
+            ElapsedText(start: model.recordingStartedAt ?? Date())
+                .font(.system(size: 14, weight: .semibold).monospacedDigit())
+                .foregroundStyle(ink)
+            AudioVisualizer(levels: model.recorder.levels, color: accent)
+                .frame(width: 150, height: 22)
+            Button { model.hidePopup() } label: {
+                Image(systemName: "minus")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(ink.opacity(0.6))
+                    .frame(width: 22, height: 22)
+                    .background(Circle().fill(Color.black.opacity(0.06)))
+            }
+            .buttonStyle(.plain)
+            .help("Hide")
+        }
+    }
+
     private var closeBadge: some View {
         Button { model.hidePopup() } label: {
             Image(systemName: "xmark")
@@ -54,126 +99,34 @@ struct RecorderPopup: View {
         .buttonStyle(.plain)
         .help("Close")
     }
+}
 
-    @ViewBuilder
-    private var row: some View {
-        if !client.isAuthenticated {
-            SignInView().frame(width: 300)
-        } else if let done = model.doneFlash {
-            doneRow(done)
-        } else if model.isRecording {
-            if collapsed { collapsedRow } else { recordingRow }
-        } else if let status = model.activeStatus {
-            processingRow(status)
-        } else if let failed = model.failedMeeting {
-            failedRow(failed)
-        } else {
-            readyRow
-        }
-    }
+// MARK: - Audio visualizer (scrolling bars)
 
-    // MARK: Rows
+private struct AudioVisualizer: View {
+    let levels: [Float]
+    let color: Color
 
-    private var readyRow: some View {
-        HStack(spacing: 40) {
-            HStack(spacing: 12) {
-                Image("WindayLogo")
-                    .resizable()
-                    .renderingMode(.template)
-                    .scaledToFit()
-                    .foregroundStyle(ink)
-                    .frame(width: 24, height: 24)
-                Text("Start AI Meeting Note")
-                    .font(.system(size: 15, weight: .regular))
-                    .foregroundStyle(ink)
-            }
-            SplitButton(title: "Start Transcribing", accent: accent) {
-                Task { await model.startRecording() }
-            } menu: {
-                Button("Hide") { model.hidePopup() }
-            }
-        }
-    }
-
-    private var recordingRow: some View {
-        HStack(spacing: 24) {
-            HStack(spacing: 10) {
-                RecordingDot()
-                ElapsedText(start: model.recordingStartedAt ?? Date())
-                    .font(.system(size: 15, weight: .semibold).monospacedDigit())
-                    .foregroundStyle(ink)
-                MiniLevel(level: model.recorder.level, accent: accent).frame(width: 40)
-            }
-            SplitButton(title: "Stop & summarize", accent: accent) {
-                Task { await model.stopRecordingAndProcess() }
-            } menu: {
-                Button { collapsed = true } label: { Label("Collapse", systemImage: "chevron.up") }
-                Button(role: .destructive) {
-                    Task { await model.cancelRecording() }
-                } label: { Label("Discard recording", systemImage: "trash") }
-            }
-        }
-    }
-
-    private var collapsedRow: some View {
-        HStack(spacing: 8) {
-            RecordingDot()
-            ElapsedText(start: model.recordingStartedAt ?? Date())
-                .font(.system(size: 15, weight: .semibold).monospacedDigit())
-                .foregroundStyle(ink)
-            Image(systemName: "chevron.down").font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(ink.opacity(0.4))
-        }
-        .contentShape(Rectangle())
-        .onTapGesture { collapsed = false }
-        .help("Expand")
-    }
-
-    private func processingRow(_ status: String) -> some View {
-        HStack(spacing: 10) {
-            ProgressView().controlSize(.small)
-            Text(status).font(.system(size: 14)).foregroundStyle(ink.opacity(0.7))
-        }
-    }
-
-    private func doneRow(_ message: String) -> some View {
-        HStack(spacing: 10) {
-            Image(systemName: "checkmark.circle.fill").foregroundStyle(accent)
-            Text(message).font(.system(size: 14, weight: .medium)).foregroundStyle(ink)
-        }
-    }
-
-    private func failedRow(_ meeting: Meeting) -> some View {
-        HStack(spacing: 16) {
-            HStack(spacing: 10) {
-                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(meeting.transcript != nil ? "Summary failed — transcript saved"
-                                                    : "Processing failed")
-                        .font(.system(size: 14, weight: .medium)).foregroundStyle(ink)
-                    Text("You can retry — it won't re-record the call.")
-                        .font(.system(size: 11)).foregroundStyle(ink.opacity(0.5))
+    var body: some View {
+        GeometryReader { geo in
+            let n = max(levels.count, 1)
+            let spacing: CGFloat = 2
+            let barW = max(1.5, (geo.size.width - spacing * CGFloat(n - 1)) / CGFloat(n))
+            HStack(alignment: .center, spacing: spacing) {
+                ForEach(levels.indices, id: \.self) { i in
+                    Capsule()
+                        .fill(color.opacity(0.55 + 0.45 * Double(min(levels[i], 1))))
+                        .frame(width: barW,
+                               height: max(2, CGFloat(min(levels[i], 1)) * geo.size.height))
                 }
             }
-            HStack(spacing: 8) {
-                Button("Dismiss") { model.dismissFailure() }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(ink.opacity(0.55))
-                Button { Task { await model.retryProcessing(meeting) } } label: {
-                    Text("Retry")
-                        .font(.system(size: 15))
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 9)
-                        .background(accent, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                }
-                .buttonStyle(.plain)
-            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+            .animation(.linear(duration: 0.08), value: levels)
         }
     }
 }
 
-// MARK: - Split button (text + chevron menu), styled like the Figma design
+// MARK: - Split button (text + chevron menu)
 
 private struct SplitButton<MenuItems: View>: View {
     let title: String
@@ -219,14 +172,10 @@ private struct SplitButton<MenuItems: View>: View {
 private struct RecordingDot: View {
     @State private var dim = false
     var body: some View {
-        Circle()
-            .fill(.red)
-            .frame(width: 9, height: 9)
+        Circle().fill(.red).frame(width: 9, height: 9)
             .opacity(dim ? 0.3 : 1)
             .onAppear {
-                withAnimation(.easeInOut(duration: 0.7).repeatForever(autoreverses: true)) {
-                    dim = true
-                }
+                withAnimation(.easeInOut(duration: 0.7).repeatForever(autoreverses: true)) { dim = true }
             }
     }
 }
@@ -239,23 +188,6 @@ private struct ElapsedText: View {
         }
     }
     private func format(_ t: TimeInterval) -> String {
-        let s = max(0, Int(t))
-        return String(format: "%d:%02d", s / 60, s % 60)
-    }
-}
-
-private struct MiniLevel: View {
-    let level: Float
-    let accent: Color
-    var body: some View {
-        GeometryReader { geo in
-            ZStack(alignment: .leading) {
-                Capsule().fill(Color.black.opacity(0.08))
-                Capsule().fill(accent)
-                    .frame(width: max(2, CGFloat(min(level, 1)) * geo.size.width))
-                    .animation(.linear(duration: 0.1), value: level)
-            }
-        }
-        .frame(height: 5)
+        let s = max(0, Int(t)); return String(format: "%d:%02d", s / 60, s % 60)
     }
 }

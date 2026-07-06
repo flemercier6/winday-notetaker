@@ -1,23 +1,29 @@
 import AppKit
 import SwiftUI
 
-/// Manages a single floating panel that hosts the recorder popup, pinned to the
-/// top-center of the main screen and visible above full-screen apps. The panel
-/// auto-sizes to its SwiftUI content (so collapsing shrinks the window).
+/// Manages a floating panel that hosts a SwiftUI view, anchored to a screen
+/// corner. The panel auto-sizes to its content. A `topCenter` panel with an
+/// autosave name is draggable and remembers its position; a transient panel
+/// (no autosave) is re-anchored on every show.
 @MainActor
 final class FloatingPanelController {
-    private var panel: FloatingPanel?
+    enum Anchor { case topCenter, bottomTrailing }
 
-    private static let autosaveName = "WindayRecorderPanel"
+    private var panel: FloatingPanel?
+    private let anchor: Anchor
+    private let autosaveName: String?
     private var didInitialPlacement = false
 
-    /// Build the panel once with the popup view (environment objects injected).
+    init(anchor: Anchor, autosaveName: String? = nil) {
+        self.anchor = anchor
+        self.autosaveName = autosaveName
+    }
+
     func configure(_ rootView: some View) {
         let hosting = NSHostingController(rootView: rootView)
         let panel = FloatingPanel(contentRect: NSRect(x: 0, y: 0, width: 320, height: 80))
-        panel.contentViewController = hosting   // window follows SwiftUI size
-        // Remember (and restore) wherever the user drags it — across launches.
-        panel.setFrameAutosaveName(Self.autosaveName)
+        panel.contentViewController = hosting
+        if let autosaveName { panel.setFrameAutosaveName(autosaveName) }
         self.panel = panel
     }
 
@@ -26,14 +32,16 @@ final class FloatingPanelController {
     func show() {
         guard let panel else { return }
         panel.layoutIfNeeded()
-        // Only choose a position the very first time (top-center). After that we
-        // never move it, so the user's dragged position sticks.
-        if !didInitialPlacement {
-            didInitialPlacement = true
-            let key = "NSWindow Frame \(Self.autosaveName)"
-            if UserDefaults.standard.object(forKey: key) == nil {
-                reposition()
+        if let autosaveName {
+            // Sticky: place once (first launch), then respect user drags.
+            if !didInitialPlacement {
+                didInitialPlacement = true
+                if UserDefaults.standard.object(forKey: "NSWindow Frame \(autosaveName)") == nil {
+                    reposition()
+                }
             }
+        } else {
+            reposition()   // transient: always re-anchor
         }
         panel.orderFrontRegardless()
     }
@@ -43,10 +51,15 @@ final class FloatingPanelController {
     private func reposition() {
         guard let panel, let screen = NSScreen.main else { return }
         let size = panel.frame.size
-        let visible = screen.visibleFrame
-        let x = visible.midX - size.width / 2
-        let y = visible.maxY - size.height - 8   // just below the menu bar
-        panel.setFrameOrigin(NSPoint(x: x, y: y))
+        let vf = screen.visibleFrame
+        let origin: NSPoint
+        switch anchor {
+        case .topCenter:
+            origin = NSPoint(x: vf.midX - size.width / 2, y: vf.maxY - size.height - 8)
+        case .bottomTrailing:
+            origin = NSPoint(x: vf.maxX - size.width - 16, y: vf.minY + 16)
+        }
+        panel.setFrameOrigin(origin)
     }
 }
 
@@ -67,7 +80,7 @@ final class FloatingPanel: NSPanel {
         standardWindowButton(.zoomButton)?.isHidden = true
         backgroundColor = .clear
         isOpaque = false
-        hasShadow = false   // the SwiftUI card draws its own shadow
+        hasShadow = false
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         hidesOnDeactivate = false
         isReleasedWhenClosed = false

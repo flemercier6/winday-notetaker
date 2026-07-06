@@ -12,10 +12,10 @@ struct PipelineCoordinator {
     let config: Config
 
     enum Stage: String {
-        case uploading = "Uploading recording…"
-        case transcribing = "Transcribing with Deepgram…"
-        case summarizing = "Summarizing with Gemini…"
-        case exporting = "Sending to Notion…"
+        case uploading = "Preparing…"
+        case transcribing = "Transcribing…"
+        case summarizing = "Summarizing…"
+        case exporting = "Saving notes…"
         case done = "Done"
     }
 

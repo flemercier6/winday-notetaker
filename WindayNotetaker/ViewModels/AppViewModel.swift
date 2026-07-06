@@ -3,23 +3,21 @@ import Combine
 import AppKit
 
 /// Central app state and orchestration hub. Runs as a background agent: it
-/// watches for meetings, shows the floating popup, and drives the
-/// record → upload → transcribe → summarize → export pipeline through Supabase.
+/// watches for meetings, shows the top recorder pill + the bottom-right progress
+/// popup, and drives record → transcribe → summarize → export through Supabase.
 @MainActor
 final class AppViewModel: ObservableObject {
     static let shared = AppViewModel()
 
     @Published var meetings: [Meeting] = []
 
-    /// Non-nil while a recording or pipeline run is in progress.
     @Published var activeStatus: String?
     @Published var errorMessage: String?
-    /// Set when recording starts (drives the live elapsed timer).
     @Published var recordingStartedAt: Date?
-    /// Brief success message shown before the popup auto-dismisses.
+    /// Non-nil in the "done" state: shows a confirmation + Open in Notion.
     @Published var doneFlash: String?
-    /// Set when processing failed but the transcript (or summary) is preserved,
-    /// so the popup can offer a Retry that resumes from the failed step.
+    @Published var doneNotionURL: String?
+    /// Set when processing failed but the transcript/summary is preserved.
     @Published var failedMeeting: Meeting?
 
     let recorder = AudioRecorder()
@@ -28,54 +26,68 @@ final class AppViewModel: ObservableObject {
 
     private let config = Config.shared
     private let store = MeetingStore.shared
-    private let panel = FloatingPanelController()
+    private let recorderPanel = FloatingPanelController(anchor: .topCenter, autosaveName: "WindayRecorderPanel")
+    private let progressPanel = FloatingPanelController(anchor: .bottomTrailing)
     private var cancellables = Set<AnyCancellable>()
     private var recordingMeetingID: Meeting.ID?
     private var agentStarted = false
-    /// User closed the popup for the current meeting — don't auto-reopen it.
+
+    /// User hid the top pill with "–": keep it hidden until the meeting is over.
     private var dismissed = false
+    /// User opened the recorder from the menu with no meeting in progress.
+    private var manuallyShown = false
+    /// Auto-end only for recordings tied to a detected Meet window.
+    private var autoEndArmed = false
+    private var pendingEnd: Task<Void, Never>?
 
     init() {
         meetings = store.load()
         meetDetector.startMonitoring()
 
-        // Re-publish nested ObservableObject changes so views observing this
-        // model update on mic level and meeting-detection changes.
         recorder.objectWillChange
             .sink { [weak self] in self?.objectWillChange.send() }
             .store(in: &cancellables)
         meetDetector.objectWillChange
             .sink { [weak self] in self?.objectWillChange.send() }
             .store(in: &cancellables)
+
+        recorder.onExternalStop = { [weak self] in
+            Task { @MainActor in await self?.stopRecordingAndProcess() }
+        }
     }
 
     var isRecording: Bool { recorder.isRecording }
 
-    // MARK: - Agent lifecycle (called from AppDelegate)
+    // MARK: - Agent lifecycle
 
     func beginAgent() {
         guard !agentStarted else { return }
         agentStarted = true
 
-        let popup = RecorderPopup()
+        recorderPanel.configure(RecorderPopup()
             .environmentObject(self)
             .environmentObject(SupabaseClient.shared)
-            .environmentObject(Config.shared)
-        panel.configure(popup)
+            .environmentObject(Config.shared))
+        progressPanel.configure(ProgressPopup()
+            .environmentObject(self))
 
-        // Show/hide the popup as meetings come and go, or recording starts/stops.
+        // Recompute which popup is visible whenever relevant state changes.
+        Publishers.MergeMany(
+            $activeStatus.map { _ in () }.eraseToAnyPublisher(),
+            $doneFlash.map { _ in () }.eraseToAnyPublisher(),
+            $failedMeeting.map { _ in () }.eraseToAnyPublisher(),
+            recorder.$isRecording.map { _ in () }.eraseToAnyPublisher(),
+            meetDetector.$isMeetActive.map { _ in () }.eraseToAnyPublisher(),
+            meetDetector.$micInUse.map { _ in () }.eraseToAnyPublisher()
+        )
+        .receive(on: RunLoop.main)
+        .sink { [weak self] in self?.updatePopups() }
+        .store(in: &cancellables)
+
+        // Auto-end when the Meet window disappears for a sustained period.
         meetDetector.$isMeetActive
-            .combineLatest(meetDetector.$micInUse)
             .receive(on: RunLoop.main)
-            .sink { [weak self] meet, mic in self?.updatePopup(meetingLikely: meet || mic) }
-            .store(in: &cancellables)
-
-        recorder.$isRecording
-            .receive(on: RunLoop.main)
-            .sink { [weak self] _ in
-                guard let self else { return }
-                self.updatePopup(meetingLikely: self.meetDetector.meetingLikely)
-            }
+            .sink { [weak self] active in self?.handleMeetPresence(active) }
             .store(in: &cancellables)
     }
 
@@ -83,43 +95,67 @@ final class AppViewModel: ObservableObject {
 
     func showPopup() {
         dismissed = false
+        manuallyShown = true
         NSApp.activate(ignoringOtherApps: true)
-        panel.show()
+        updatePopups()
     }
 
+    /// Hide the top pill ("–"): stays hidden for the rest of this meeting.
     func hidePopup() {
         dismissed = true
-        panel.hide()
+        manuallyShown = false
+        updatePopups()
     }
 
-    private func updatePopup(meetingLikely likely: Bool) {
-        // Reset the dismiss latch once the meeting is over and nothing is pending.
-        if !likely && !isRecording && activeStatus == nil && failedMeeting == nil { dismissed = false }
-        let shouldShow = isRecording || activeStatus != nil || failedMeeting != nil || (likely && !dismissed)
-        if shouldShow { panel.show() } else { panel.hide() }
+    private func updatePopups() {
+        let likely = meetDetector.meetingLikely
+        let hasProgress = activeStatus != nil || doneFlash != nil || failedMeeting != nil
+
+        if !likely && !isRecording && !hasProgress && !manuallyShown { dismissed = false }
+
+        let recorderVisible = !hasProgress && !dismissed && (isRecording || likely || manuallyShown)
+        if recorderVisible { recorderPanel.show() } else { recorderPanel.hide() }
+        if hasProgress { progressPanel.show() } else { progressPanel.hide() }
+    }
+
+    // MARK: - End-of-meeting detection
+
+    private func handleMeetPresence(_ active: Bool) {
+        guard isRecording, autoEndArmed else { pendingEnd?.cancel(); pendingEnd = nil; return }
+        if active {
+            pendingEnd?.cancel(); pendingEnd = nil
+        } else if pendingEnd == nil {
+            pendingEnd = Task { @MainActor [weak self] in
+                // Grace period so a quick tab switch doesn't end the meeting.
+                try? await Task.sleep(nanoseconds: 10_000_000_000)
+                guard let self, !Task.isCancelled,
+                      self.isRecording, !self.meetDetector.isMeetActive else { return }
+                await self.stopRecordingAndProcess()
+            }
+        }
     }
 
     // MARK: - Recording
 
     func startRecording() async {
         errorMessage = nil
-        guard client.isAuthenticated else {
-            errorMessage = "Sign in first."
-            return
-        }
+        guard client.isAuthenticated else { return }
         let name = "Meeting \(Date().formatted(date: .abbreviated, time: .shortened))"
         var meeting = Meeting(title: name, status: .recording)
         let url = store.newRecordingURL(for: meeting)
         meeting.audioFileURL = url
 
         do {
-            // Scope capture to the detected Meet window when we have one.
             recorder.targetWindowID = meetDetector.meetWindowID
+            autoEndArmed = (meetDetector.meetWindowID != nil)   // only auto-end real Meet calls
             try await recorder.start(to: url)
             recordingMeetingID = meeting.id
             recordingStartedAt = Date()
+            manuallyShown = false
+            dismissed = false
             meetings.insert(meeting, at: 0)
             persist()
+            updatePopups()
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -127,6 +163,8 @@ final class AppViewModel: ObservableObject {
 
     func stopRecordingAndProcess() async {
         guard let id = recordingMeetingID else { return }
+        pendingEnd?.cancel(); pendingEnd = nil
+        autoEndArmed = false
         await recorder.stop()
         recordingMeetingID = nil
         recordingStartedAt = nil
@@ -139,10 +177,10 @@ final class AppViewModel: ObservableObject {
         await runPipeline(for: meeting)
     }
 
-    /// Stop recording and DISCARD it — no transcript, no summary. Removes the
-    /// in-progress meeting and its audio file, then hides the popup.
     func cancelRecording() async {
         guard let id = recordingMeetingID else { return }
+        pendingEnd?.cancel(); pendingEnd = nil
+        autoEndArmed = false
         await recorder.stop()
         recordingMeetingID = nil
         recordingStartedAt = nil
@@ -154,16 +192,14 @@ final class AppViewModel: ObservableObject {
         meetings.removeAll { $0.id == id }
         persist()
         activeStatus = nil
-        hidePopup()
+        dismissed = false
+        updatePopups()
     }
 
     // MARK: - Pipeline
 
     func runPipeline(for meeting: Meeting) async {
-        guard client.isAuthenticated else {
-            errorMessage = "Sign in to process meetings."
-            return
-        }
+        guard client.isAuthenticated else { return }
         failedMeeting = nil
         await syncSettings()
 
@@ -176,7 +212,6 @@ final class AppViewModel: ObservableObject {
             activeStatus = nil
             finish(result)
         } catch {
-            // Upload/transcribe failure — nothing was captured yet.
             var failed = meeting
             failed.status = .failed
             failed.errorMessage = error.localizedDescription
@@ -186,14 +221,10 @@ final class AppViewModel: ObservableObject {
         }
     }
 
-    /// Retry a failed meeting, resuming from the first missing step (transcript →
-    /// summary → export). The transcript/summary already obtained are reused, so
-    /// a Gemini rate-limit only re-runs the summary, never the whole call.
     func retryProcessing(_ meeting: Meeting) async {
         guard client.isAuthenticated else { return }
         failedMeeting = nil
 
-        // Never uploaded — redo the whole pipeline from scratch.
         if meeting.audioPath == nil {
             await runPipeline(for: meeting)
             return
@@ -230,52 +261,43 @@ final class AppViewModel: ObservableObject {
         }
     }
 
-    /// Dismiss the failed state (give up on the retry).
-    func dismissFailure() {
-        failedMeeting = nil
-        hidePopup()
-    }
-
-    // MARK: Pipeline result handling
+    // MARK: - Progress result
 
     private func finish(_ meeting: Meeting) {
-        if meeting.errorMessage != nil {
-            presentFailure(meeting)
-        } else {
-            failedMeeting = nil
-            doneFlash = meeting.notionPageURL != nil ? "Sent to Notion" : "Summary ready"
-            Task { @MainActor [weak self] in
-                try? await Task.sleep(nanoseconds: 2_500_000_000)
-                self?.doneFlash = nil
-                self?.hidePopup()
-            }
+        if meeting.errorMessage != nil { presentFailure(meeting); return }
+        failedMeeting = nil
+        doneNotionURL = meeting.notionPageURL
+        doneFlash = "Notes ready"
+        updatePopups()
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 15_000_000_000)
+            if self?.doneFlash != nil { self?.dismissProgress() }
         }
     }
 
     private func presentFailure(_ meeting: Meeting) {
         failedMeeting = meeting
         activeStatus = nil
-        updatePopup(meetingLikely: true)   // keep the popup up so Retry is reachable
+        updatePopups()
     }
 
-    func exportToNotion(_ meeting: Meeting) async {
-        guard config.isNotionConfigured else {
-            errorMessage = "Set your Notion database ID in Settings → Notion."
-            return
-        }
-        guard meeting.summary != nil else { return }
-        await syncSettings()
-        activeStatus = "Sending to Notion…"
-        let pipeline = PipelineCoordinator(client: client, config: config)
-        do {
-            var updated = meeting
-            updated.notionPageURL = try await pipeline.export(meeting)
-            updated.status = .exported
-            update(updated)
-        } catch {
-            errorMessage = error.localizedDescription
-        }
+    /// Open the exported Notion page (from the done popup) and dismiss.
+    func openNotionPage() {
+        if let s = doneNotionURL, let url = URL(string: s) { NSWorkspace.shared.open(url) }
+        dismissProgress()
+    }
+
+    func dismissProgress() {
+        doneFlash = nil
+        doneNotionURL = nil
+        failedMeeting = nil
         activeStatus = nil
+        updatePopups()
+    }
+
+    func dismissFailure() {
+        failedMeeting = nil
+        updatePopups()
     }
 
     // MARK: - Settings sync

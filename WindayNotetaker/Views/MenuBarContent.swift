@@ -10,8 +10,12 @@ struct MenuBarContent: View {
     var body: some View {
         if client.isAuthenticated {
             Text(client.email ?? "Signed in").foregroundStyle(.secondary)
-            Button(model.isRecording ? "Show recorder (recording…)" : "Open recorder") {
-                model.showPopup()
+            if model.isRecording {
+                Button("Stop & save") { Task { await model.stopRecordingAndProcess() } }
+                Button("Discard recording") { Task { await model.cancelRecording() } }
+                Button("Show recorder") { model.showPopup() }
+            } else {
+                Button("Open recorder") { model.showPopup() }
             }
         } else {
             Button("Sign in…") { model.showPopup() }

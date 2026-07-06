@@ -35,11 +35,21 @@ final class AudioRecorder: NSObject, ObservableObject {
 
     @Published private(set) var isRecording = false
     @Published private(set) var level: Float = 0   // 0...1 rough input level for the UI
+    /// Rolling history of recent levels, driving the audio visualizer bars.
+    static let barCount = 28
+
+    @Published private(set) var levels: [Float] = Array(repeating: 0, count: AudioRecorder.barCount)
 
     /// When set, capture only this window's app audio (the Google Meet tab's
     /// browser) instead of the whole display. Set before calling `start`.
     var targetWindowID: CGWindowID?
 
+    /// Called if the capture stream stops on its own (e.g. the captured browser
+    /// window/app closes) — used to auto-finish the meeting. NOT called when we
+    /// stop it ourselves.
+    var onExternalStop: (() -> Void)?
+
+    private var isStopping = false
     private var stream: SCStream?
     private var engine: AVAudioEngine?
     private var mixer: FileMixer?
@@ -61,6 +71,8 @@ final class AudioRecorder: NSObject, ObservableObject {
         let micGranted = await AVCaptureDevice.requestAccess(for: .audio)
         guard micGranted else { throw RecorderError.micDenied }
 
+        isStopping = false
+        levels = Array(repeating: 0, count: Self.barCount)
         systemAudioFIFO.reset()
         try await startSystemAudioCapture()
         try startEngine(writingTo: url)
@@ -70,8 +82,10 @@ final class AudioRecorder: NSObject, ObservableObject {
 
     func stop() async {
         guard isRecording else { return }
+        isStopping = true
         isRecording = false
         level = 0
+        levels = Array(repeating: 0, count: Self.barCount)
 
         engine?.inputNode.removeTap(onBus: 0)
         engine?.stop()
@@ -84,6 +98,15 @@ final class AudioRecorder: NSObject, ObservableObject {
         }
         stream = nil
         systemAudioFIFO.reset()
+    }
+
+    /// Push a new level sample into the rolling visualizer history.
+    private func pushLevel(_ peak: Float) {
+        level = peak
+        var next = levels
+        next.removeFirst()
+        next.append(min(1, peak * 1.6))
+        levels = next
     }
 
     // MARK: - System audio (ScreenCaptureKit)
@@ -138,7 +161,7 @@ final class AudioRecorder: NSObject, ObservableObject {
 
         let mixer = try FileMixer(url: url, micFormat: micFormat, mixFormat: mixFormat, fifo: systemAudioFIFO)
         mixer.onLevel = { [weak self] peak in
-            Task { @MainActor in self?.level = peak }
+            Task { @MainActor in self?.pushLevel(peak) }
         }
         self.mixer = mixer
 
@@ -167,7 +190,12 @@ extension AudioRecorder: SCStreamOutput, SCStreamDelegate {
     }
 
     nonisolated func stream(_ stream: SCStream, didStopWithError error: Error) {
-        Task { @MainActor in self.isRecording = false }
+        // The capture stopped on its own (e.g. the browser window/app closed).
+        // Ask the app to finish the meeting — unless we're the ones stopping it.
+        Task { @MainActor in
+            guard self.isRecording, !self.isStopping else { return }
+            self.onExternalStop?()
+        }
     }
 }
 
