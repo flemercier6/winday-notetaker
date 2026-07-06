@@ -41,6 +41,8 @@ struct RecorderPopup: View {
             if collapsed { collapsedRow } else { recordingRow }
         } else if let status = model.activeStatus {
             processingRow(status)
+        } else if let failed = model.failedMeeting {
+            failedRow(failed)
         } else {
             readyRow
         }
@@ -111,6 +113,35 @@ struct RecorderPopup: View {
         HStack(spacing: 10) {
             Image(systemName: "checkmark.circle.fill").foregroundStyle(accent)
             Text(message).font(.system(size: 14, weight: .medium)).foregroundStyle(ink)
+        }
+    }
+
+    private func failedRow(_ meeting: Meeting) -> some View {
+        HStack(spacing: 16) {
+            HStack(spacing: 10) {
+                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(meeting.transcript != nil ? "Summary failed — transcript saved"
+                                                    : "Processing failed")
+                        .font(.system(size: 14, weight: .medium)).foregroundStyle(ink)
+                    Text("You can retry — it won't re-record the call.")
+                        .font(.system(size: 11)).foregroundStyle(ink.opacity(0.5))
+                }
+            }
+            HStack(spacing: 8) {
+                Button("Dismiss") { model.dismissFailure() }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(ink.opacity(0.55))
+                Button { Task { await model.retryProcessing(meeting) } } label: {
+                    Text("Retry")
+                        .font(.system(size: 15))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 9)
+                        .background(accent, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                }
+                .buttonStyle(.plain)
+            }
         }
     }
 }

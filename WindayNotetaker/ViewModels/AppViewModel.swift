@@ -18,6 +18,9 @@ final class AppViewModel: ObservableObject {
     @Published var recordingStartedAt: Date?
     /// Brief success message shown before the popup auto-dismisses.
     @Published var doneFlash: String?
+    /// Set when processing failed but the transcript (or summary) is preserved,
+    /// so the popup can offer a Retry that resumes from the failed step.
+    @Published var failedMeeting: Meeting?
 
     let recorder = AudioRecorder()
     let meetDetector = MeetDetector()
@@ -90,9 +93,9 @@ final class AppViewModel: ObservableObject {
     }
 
     private func updatePopup(meetingLikely likely: Bool) {
-        // Reset the dismiss latch once the meeting is over.
-        if !likely && !isRecording { dismissed = false }
-        let shouldShow = isRecording || activeStatus != nil || (likely && !dismissed)
+        // Reset the dismiss latch once the meeting is over and nothing is pending.
+        if !likely && !isRecording && activeStatus == nil && failedMeeting == nil { dismissed = false }
+        let shouldShow = isRecording || activeStatus != nil || failedMeeting != nil || (likely && !dismissed)
         if shouldShow { panel.show() } else { panel.hide() }
     }
 
@@ -161,6 +164,7 @@ final class AppViewModel: ObservableObject {
             errorMessage = "Sign in to process meetings."
             return
         }
+        failedMeeting = nil
         await syncSettings()
 
         let pipeline = PipelineCoordinator(client: client, config: config)
@@ -170,21 +174,88 @@ final class AppViewModel: ObservableObject {
             }
             update(result)
             activeStatus = nil
-            // Flash a confirmation, then auto-dismiss the popup.
-            doneFlash = result.notionPageURL != nil ? "Sent to Notion" : "Summary ready"
+            finish(result)
+        } catch {
+            // Upload/transcribe failure — nothing was captured yet.
+            var failed = meeting
+            failed.status = .failed
+            failed.errorMessage = error.localizedDescription
+            update(failed)
+            activeStatus = nil
+            presentFailure(failed)
+        }
+    }
+
+    /// Retry a failed meeting, resuming from the first missing step (transcript →
+    /// summary → export). The transcript/summary already obtained are reused, so
+    /// a Gemini rate-limit only re-runs the summary, never the whole call.
+    func retryProcessing(_ meeting: Meeting) async {
+        guard client.isAuthenticated else { return }
+        failedMeeting = nil
+
+        // Never uploaded — redo the whole pipeline from scratch.
+        if meeting.audioPath == nil {
+            await runPipeline(for: meeting)
+            return
+        }
+
+        var m = meeting
+        m.errorMessage = nil
+        await syncSettings()
+        let pipeline = PipelineCoordinator(client: client, config: config)
+        do {
+            if m.transcript == nil {
+                activeStatus = PipelineCoordinator.Stage.transcribing.rawValue
+                m = try await pipeline.transcribeOnly(m)
+            }
+            if m.summary == nil {
+                activeStatus = PipelineCoordinator.Stage.summarizing.rawValue
+                m = try await pipeline.summarizeOnly(m)
+            }
+            if config.autoExportToNotion && config.isNotionConfigured && m.notionPageURL == nil {
+                activeStatus = PipelineCoordinator.Stage.exporting.rawValue
+                m.notionPageURL = try await pipeline.export(m)
+                m.status = .exported
+            }
+            m.errorMessage = nil
+            update(m)
+            activeStatus = nil
+            finish(m)
+        } catch {
+            m.status = .failed
+            m.errorMessage = error.localizedDescription
+            update(m)
+            activeStatus = nil
+            presentFailure(m)
+        }
+    }
+
+    /// Dismiss the failed state (give up on the retry).
+    func dismissFailure() {
+        failedMeeting = nil
+        hidePopup()
+    }
+
+    // MARK: Pipeline result handling
+
+    private func finish(_ meeting: Meeting) {
+        if meeting.errorMessage != nil {
+            presentFailure(meeting)
+        } else {
+            failedMeeting = nil
+            doneFlash = meeting.notionPageURL != nil ? "Sent to Notion" : "Summary ready"
             Task { @MainActor [weak self] in
                 try? await Task.sleep(nanoseconds: 2_500_000_000)
                 self?.doneFlash = nil
                 self?.hidePopup()
             }
-        } catch {
-            var failed = meeting
-            failed.status = .failed
-            failed.errorMessage = error.localizedDescription
-            update(failed)
-            errorMessage = error.localizedDescription
-            activeStatus = nil
         }
+    }
+
+    private func presentFailure(_ meeting: Meeting) {
+        failedMeeting = meeting
+        activeStatus = nil
+        updatePopup(meetingLikely: true)   // keep the popup up so Retry is reachable
     }
 
     func exportToNotion(_ meeting: Meeting) async {

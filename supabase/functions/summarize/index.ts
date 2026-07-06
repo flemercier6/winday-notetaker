@@ -1,8 +1,11 @@
-// summarize — sends a meeting's diarized transcript to Gemini (Flash) and
-// stores the structured summary (headline, summary, key points, next steps).
+// summarize — sends a meeting's transcript to Gemini (Flash) and stores the
+// structured summary (headline, summary, key points, next steps).
 //
-// The Gemini API key lives ONLY here, as the `GEMINI_API_KEY` Edge Function
-// secret.
+// Gemini's free/standard tiers return 429 (RESOURCE_EXHAUSTED) under load. We
+// retry with exponential backoff and fall back to alternate Flash models so a
+// transient rate-limit never loses the meeting.
+//
+// The Gemini API key lives ONLY here, as the `GEMINI_API_KEY` secret.
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const cors = {
@@ -39,6 +42,8 @@ const responseSchema = {
   required: ["headline", "summary", "key_points", "next_steps"],
 };
 
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
 
@@ -62,7 +67,7 @@ Deno.serve(async (req) => {
 
     const { data: settings } = await admin
       .from("user_settings").select("gemini_model").eq("user_id", user.id).maybeSingle();
-    const model = settings?.gemini_model || "gemini-flash-latest";
+    const primary = settings?.gemini_model || "gemini-flash-latest";
 
     const labelled = meeting.transcript.utterances
       .map((u: any) => `${u.speaker}: ${u.text}`).join("\n");
@@ -74,24 +79,16 @@ Deno.serve(async (req) => {
       `participant) and assign a realistic priority. Write in the same language as the ` +
       `transcript.\n\nMeeting title: ${meeting.title}\n\nTRANSCRIPT:\n${labelled}`;
 
-    const resp = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
-      {
-        method: "POST",
-        headers: { "x-goog-api-key": GEMINI_API_KEY, "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contents: [{ role: "user", parts: [{ text: prompt }] }],
-          generationConfig: {
-            temperature: 0.3,
-            responseMimeType: "application/json",
-            responseSchema,
-          },
-        }),
+    const body = {
+      contents: [{ role: "user", parts: [{ text: prompt }] }],
+      generationConfig: {
+        temperature: 0.3,
+        responseMimeType: "application/json",
+        responseSchema,
       },
-    );
-    if (!resp.ok) return json({ error: `Gemini ${resp.status}: ${await resp.text()}` }, 502);
+    };
 
-    const data = await resp.json();
+    const data = await generateWithRetry(primary, body);
     const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
     if (!text) return json({ error: "Gemini returned no content" }, 502);
     const summary = JSON.parse(text);
@@ -105,9 +102,41 @@ Deno.serve(async (req) => {
 
     return json({ summary });
   } catch (e) {
-    return json({ error: String(e) }, 500);
+    return json({ error: String(e) }, 502);
   }
 });
+
+/// Calls Gemini with backoff on 429/500/503, then falls back to alternate Flash
+/// models. Total worst-case wait ~10s, safely under the function time limit.
+async function generateWithRetry(primary: string, body: unknown): Promise<any> {
+  const fallbacks = ["gemini-2.5-flash", "gemini-2.0-flash"].filter((m) => m !== primary);
+  const plan: Array<{ model: string; delay: number }> = [
+    { model: primary, delay: 0 },
+    { model: primary, delay: 2500 },
+    { model: primary, delay: 6000 },
+    ...fallbacks.map((m) => ({ model: m, delay: 1500 })),
+  ];
+
+  let lastErr = "unknown error";
+  for (const step of plan) {
+    if (step.delay) await sleep(step.delay);
+    const resp = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${step.model}:generateContent`,
+      {
+        method: "POST",
+        headers: { "x-goog-api-key": GEMINI_API_KEY, "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    );
+    if (resp.ok) return await resp.json();
+
+    const status = resp.status;
+    lastErr = `${status}: ${(await resp.text()).slice(0, 300)}`;
+    // Only worth retrying on rate-limit / transient server errors.
+    if (![429, 500, 503].includes(status)) break;
+  }
+  throw new Error(`Gemini failed after retries — ${lastErr}`);
+}
 
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
