@@ -1,10 +1,13 @@
 // export-notion — creates a Notion page (a new row in a database) from a
-// meeting's summary. Title = the meeting date; content = the AI summary
-// (summary, key points, prioritized next steps).
+// meeting's summary.
 //
-// The Notion integration token lives ONLY here, as the `NOTION_TOKEN` Edge
-// Function secret. The (non-secret) target database id is read from the user's
-// `user_settings` row.
+// Title  = "<event title> | <date chip> | <time>"  where the date is a real
+//          Notion date mention (renders like an @today chip, set to the meeting
+//          date). Falls back to plain text if the database rejects mentions in
+//          the title.
+// Body   = the AI summary (summary, key points, prioritized next steps).
+//
+// The Notion integration token lives ONLY here, as the `NOTION_TOKEN` secret.
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const cors = {
@@ -18,6 +21,7 @@ const ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
 const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const NOTION_TOKEN = Deno.env.get("NOTION_TOKEN") ?? "";
 const NOTION_VERSION = "2022-06-28";
+const TZ = "Europe/Paris";
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
@@ -45,15 +49,11 @@ Deno.serve(async (req) => {
     const databaseId = settings?.notion_database_id;
     if (!databaseId) return json({ error: "No Notion database configured in Settings" }, 400);
 
-    const resp = await fetch("https://api.notion.com/v1/pages", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${NOTION_TOKEN}`,
-        "Notion-Version": NOTION_VERSION,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(buildPage(databaseId, meeting)),
-    });
+    // Try with a date-mention title; if Notion rejects it, retry with plain text.
+    let resp = await postPage(buildPage(databaseId, meeting, true));
+    if (!resp.ok) {
+      resp = await postPage(buildPage(databaseId, meeting, false));
+    }
     if (!resp.ok) return json({ error: `Notion ${resp.status}: ${await resp.text()}` }, 502);
 
     const page = await resp.json();
@@ -67,24 +67,48 @@ Deno.serve(async (req) => {
   }
 });
 
-function buildPage(databaseId: string, meeting: any) {
+function postPage(body: unknown) {
+  return fetch("https://api.notion.com/v1/pages", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${NOTION_TOKEN}`,
+      "Notion-Version": NOTION_VERSION,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+}
+
+function buildPage(databaseId: string, meeting: any, useDateMention: boolean) {
   const s = meeting.summary;
   const emoji: Record<string, string> = { high: "🔴", medium: "🟡", low: "🟢" };
   const order: Record<string, number> = { high: 0, medium: 1, low: 2 };
   const rt = (t: string) => [{ type: "text", text: { content: String(t).slice(0, 1990) } }];
 
-  // Title = the meeting date (the title property's id is always "title",
-  // regardless of what the column is named in the database).
-  const title = new Date(meeting.started_at).toLocaleString("fr-FR", {
-    dateStyle: "long", timeStyle: "short", timeZone: "Europe/Paris",
+  const eventTitle = s.headline || meeting.title || "Meeting";
+  const started = new Date(meeting.started_at);
+  const dateISO = started.toLocaleDateString("en-CA", { timeZone: TZ });        // YYYY-MM-DD
+  const dateLong = started.toLocaleDateString("fr-FR", {
+    day: "numeric", month: "long", year: "numeric", timeZone: TZ,
+  });
+  const timeStr = started.toLocaleTimeString("fr-FR", {
+    hour: "2-digit", minute: "2-digit", timeZone: TZ,
   });
 
-  // Content = the AI summary.
-  const children: any[] = [];
-  if (s.headline) {
-    children.push({ object: "block", type: "heading_2", heading_2: { rich_text: rt(s.headline) } });
-  }
-  children.push({ object: "block", type: "paragraph", paragraph: { rich_text: rt(s.summary ?? "") } });
+  // Title: "<event> | <date> | <time>". The date is a Notion date mention when
+  // allowed (renders as an @today-style chip), otherwise plain text.
+  const title = useDateMention
+    ? [
+        { type: "text", text: { content: `${eventTitle} | ` } },
+        { type: "mention", mention: { type: "date", date: { start: dateISO } } },
+        { type: "text", text: { content: ` | ${timeStr}` } },
+      ]
+    : rt(`${eventTitle} | ${dateLong} | ${timeStr}`);
+
+  // Body = the AI summary.
+  const children: any[] = [
+    { object: "block", type: "paragraph", paragraph: { rich_text: rt(s.summary ?? "") } },
+  ];
 
   if (Array.isArray(s.key_points) && s.key_points.length) {
     children.push({ object: "block", type: "heading_3", heading_3: { rich_text: rt("Key points") } });
@@ -109,7 +133,7 @@ function buildPage(databaseId: string, meeting: any) {
 
   return {
     parent: { database_id: databaseId },
-    properties: { title: { title: rt(title) } },
+    properties: { title: { title } },
     children,
   };
 }
