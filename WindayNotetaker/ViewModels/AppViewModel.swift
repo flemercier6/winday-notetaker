@@ -30,7 +30,7 @@ final class AppViewModel: ObservableObject {
     // Ready pill: fixed at top-center. Recording visualizer: bottom-right,
     // draggable + remembered. Progress: transient bottom-right.
     private let readyPanel = FloatingPanelController(anchor: .topCenter, movable: false)
-    private let recordingPanel = FloatingPanelController(anchor: .bottomTrailing, autosaveName: "WindayRecordingPanel", movable: true)
+    private let recordingPanel = FloatingPanelController(anchor: .bottomTrailing, movable: true)
     private let progressPanel = FloatingPanelController(anchor: .bottomTrailing)
     private var cancellables = Set<AnyCancellable>()
     private var recordingMeetingID: Meeting.ID?
@@ -157,7 +157,7 @@ final class AppViewModel: ObservableObject {
             meetGoneSince = nil
         } else {
             if meetGoneSince == nil { meetGoneSince = Date() }
-            if let since = meetGoneSince, Date().timeIntervalSince(since) >= 8 {
+            if let since = meetGoneSince, Date().timeIntervalSince(since) >= 3 {
                 stopEndMonitor()
                 Task { await stopRecordingAndProcess() }
             }

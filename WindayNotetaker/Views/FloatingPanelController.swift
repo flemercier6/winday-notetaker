@@ -35,15 +35,18 @@ final class FloatingPanelController {
         guard let panel else { return }
         panel.layoutIfNeeded()
         if let autosaveName {
-            // Sticky: place once (first launch), then respect user drags.
+            // Sticky across launches: place once, then respect user drags.
             if !didInitialPlacement {
                 didInitialPlacement = true
                 if UserDefaults.standard.object(forKey: "NSWindow Frame \(autosaveName)") == nil {
                     reposition()
                 }
             }
+        } else if movable {
+            // Anchored on first show per launch, draggable within the session.
+            if !didInitialPlacement { didInitialPlacement = true; reposition() }
         } else {
-            reposition()   // transient: always re-anchor
+            reposition()   // fixed / transient: always re-anchor
         }
         panel.orderFrontRegardless()
     }
@@ -52,14 +55,14 @@ final class FloatingPanelController {
 
     private func reposition() {
         guard let panel, let screen = NSScreen.main else { return }
-        let size = panel.frame.size
+        let size = panel.contentView?.fittingSize ?? panel.frame.size
         let vf = screen.visibleFrame
         let origin: NSPoint
         switch anchor {
         case .topCenter:
-            origin = NSPoint(x: vf.midX - size.width / 2, y: vf.maxY - size.height - 8)
+            origin = NSPoint(x: vf.midX - size.width / 2, y: vf.maxY - size.height - 2)
         case .bottomTrailing:
-            origin = NSPoint(x: vf.maxX - size.width - 16, y: vf.minY + 16)
+            origin = NSPoint(x: vf.maxX - size.width - 6, y: vf.minY + 6)
         }
         panel.setFrameOrigin(origin)
     }
