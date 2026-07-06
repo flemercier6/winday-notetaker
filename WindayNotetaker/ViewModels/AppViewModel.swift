@@ -26,7 +26,10 @@ final class AppViewModel: ObservableObject {
 
     private let config = Config.shared
     private let store = MeetingStore.shared
-    private let recorderPanel = FloatingPanelController(anchor: .topCenter, autosaveName: "WindayRecorderPanel")
+    // Ready pill: fixed at top-center. Recording visualizer: bottom-right,
+    // draggable + remembered. Progress: transient bottom-right.
+    private let readyPanel = FloatingPanelController(anchor: .topCenter, movable: false)
+    private let recordingPanel = FloatingPanelController(anchor: .bottomTrailing, autosaveName: "WindayRecordingPanel", movable: true)
     private let progressPanel = FloatingPanelController(anchor: .bottomTrailing)
     private var cancellables = Set<AnyCancellable>()
     private var recordingMeetingID: Meeting.ID?
@@ -64,7 +67,11 @@ final class AppViewModel: ObservableObject {
         guard !agentStarted else { return }
         agentStarted = true
 
-        recorderPanel.configure(RecorderPopup()
+        readyPanel.configure(RecorderPopup()
+            .environmentObject(self)
+            .environmentObject(SupabaseClient.shared)
+            .environmentObject(Config.shared))
+        recordingPanel.configure(RecorderPopup()
             .environmentObject(self)
             .environmentObject(SupabaseClient.shared)
             .environmentObject(Config.shared))
@@ -113,8 +120,11 @@ final class AppViewModel: ObservableObject {
 
         if !likely && !isRecording && !hasProgress && !manuallyShown { dismissed = false }
 
-        let recorderVisible = !hasProgress && !dismissed && (isRecording || likely || manuallyShown)
-        if recorderVisible { recorderPanel.show() } else { recorderPanel.hide() }
+        let readyVisible = !hasProgress && !isRecording && !dismissed && (likely || manuallyShown)
+        let recordingVisible = !hasProgress && isRecording && !dismissed
+
+        if readyVisible { readyPanel.show() } else { readyPanel.hide() }
+        if recordingVisible { recordingPanel.show() } else { recordingPanel.hide() }
         if hasProgress { progressPanel.show() } else { progressPanel.hide() }
     }
 

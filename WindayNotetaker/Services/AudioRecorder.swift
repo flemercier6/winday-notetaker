@@ -36,7 +36,7 @@ final class AudioRecorder: NSObject, ObservableObject {
     @Published private(set) var isRecording = false
     @Published private(set) var level: Float = 0   // 0...1 rough input level for the UI
     /// Rolling history of recent levels, driving the audio visualizer bars.
-    static let barCount = 28
+    static let barCount = 14
 
     @Published private(set) var levels: [Float] = Array(repeating: 0, count: AudioRecorder.barCount)
 
@@ -105,7 +105,9 @@ final class AudioRecorder: NSObject, ObservableObject {
         level = peak
         var next = levels
         next.removeFirst()
-        next.append(min(1, peak * 1.6))
+        // Raw peaks are low for normal speech; apply a square-root curve + gain
+        // so the bars react strongly and fill the height.
+        next.append(min(1, max(0, peak).squareRoot() * 2.3))
         levels = next
     }
 

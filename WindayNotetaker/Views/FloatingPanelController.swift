@@ -12,16 +12,18 @@ final class FloatingPanelController {
     private var panel: FloatingPanel?
     private let anchor: Anchor
     private let autosaveName: String?
+    private let movable: Bool
     private var didInitialPlacement = false
 
-    init(anchor: Anchor, autosaveName: String? = nil) {
+    init(anchor: Anchor, autosaveName: String? = nil, movable: Bool = true) {
         self.anchor = anchor
         self.autosaveName = autosaveName
+        self.movable = movable
     }
 
     func configure(_ rootView: some View) {
         let hosting = NSHostingController(rootView: rootView)
-        let panel = FloatingPanel(contentRect: NSRect(x: 0, y: 0, width: 320, height: 80))
+        let panel = FloatingPanel(contentRect: NSRect(x: 0, y: 0, width: 320, height: 80), movable: movable)
         panel.contentViewController = hosting
         if let autosaveName { panel.setFrameAutosaveName(autosaveName) }
         self.panel = panel
@@ -66,7 +68,7 @@ final class FloatingPanelController {
 /// A borderless, non-activating, always-on-top panel that can still take key
 /// focus (so the sign-in fields work).
 final class FloatingPanel: NSPanel {
-    init(contentRect: NSRect) {
+    init(contentRect: NSRect, movable: Bool = true) {
         super.init(contentRect: contentRect,
                    styleMask: [.nonactivatingPanel, .titled, .fullSizeContentView],
                    backing: .buffered, defer: false)
@@ -74,7 +76,8 @@ final class FloatingPanel: NSPanel {
         level = .floating
         titleVisibility = .hidden
         titlebarAppearsTransparent = true
-        isMovableByWindowBackground = true
+        isMovableByWindowBackground = movable
+        self.isMovable = movable
         standardWindowButton(.closeButton)?.isHidden = true
         standardWindowButton(.miniaturizeButton)?.isHidden = true
         standardWindowButton(.zoomButton)?.isHidden = true

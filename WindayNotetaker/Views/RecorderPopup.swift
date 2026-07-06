@@ -25,8 +25,9 @@ struct RecorderPopup: View {
             .padding(4)
             .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             .overlay(alignment: .topLeading) {
-                if isHovering && !model.isRecording {
-                    closeBadge.offset(x: -6, y: -6).transition(.opacity)
+                if isHovering {
+                    hoverBadge(icon: model.isRecording ? "minus" : "xmark")
+                        .offset(x: -6, y: -6).transition(.opacity)
                 }
             }
             .padding(8)
@@ -74,22 +75,14 @@ struct RecorderPopup: View {
                 .font(.system(size: 14, weight: .semibold).monospacedDigit())
                 .foregroundStyle(ink)
             AudioVisualizer(levels: model.recorder.levels, color: accent)
-                .frame(width: 150, height: 22)
-            Button { model.hidePopup() } label: {
-                Image(systemName: "minus")
-                    .font(.system(size: 12, weight: .bold))
-                    .foregroundStyle(ink.opacity(0.6))
-                    .frame(width: 22, height: 22)
-                    .background(Circle().fill(Color.black.opacity(0.06)))
-            }
-            .buttonStyle(.plain)
-            .help("Hide")
         }
     }
 
-    private var closeBadge: some View {
+    /// Round badge shown at the top-left on hover — "–" while recording (hide),
+    /// "×" otherwise (don't record).
+    private func hoverBadge(icon: String) -> some View {
         Button { model.hidePopup() } label: {
-            Image(systemName: "xmark")
+            Image(systemName: icon)
                 .font(.system(size: 8, weight: .bold))
                 .foregroundStyle(.white)
                 .frame(width: 18, height: 18)
@@ -97,7 +90,7 @@ struct RecorderPopup: View {
                 .overlay(Circle().strokeBorder(Color.white.opacity(0.7), lineWidth: 1))
         }
         .buttonStyle(.plain)
-        .help("Close")
+        .help(icon == "minus" ? "Hide" : "Close")
     }
 }
 
@@ -107,22 +100,21 @@ private struct AudioVisualizer: View {
     let levels: [Float]
     let color: Color
 
+    private let barWidth: CGFloat = 3.5
+    private let spacing: CGFloat = 2.5
+    private let maxHeight: CGFloat = 22
+
     var body: some View {
-        GeometryReader { geo in
-            let n = max(levels.count, 1)
-            let spacing: CGFloat = 2
-            let barW = max(1.5, (geo.size.width - spacing * CGFloat(n - 1)) / CGFloat(n))
-            HStack(alignment: .center, spacing: spacing) {
-                ForEach(levels.indices, id: \.self) { i in
-                    Capsule()
-                        .fill(color.opacity(0.55 + 0.45 * Double(min(levels[i], 1))))
-                        .frame(width: barW,
-                               height: max(2, CGFloat(min(levels[i], 1)) * geo.size.height))
-                }
+        HStack(alignment: .center, spacing: spacing) {
+            ForEach(levels.indices, id: \.self) { i in
+                Capsule()
+                    .fill(color.opacity(0.5 + 0.5 * Double(min(levels[i], 1))))
+                    .frame(width: barWidth,
+                           height: max(3, CGFloat(min(levels[i], 1)) * maxHeight))
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-            .animation(.linear(duration: 0.08), value: levels)
         }
+        .frame(height: maxHeight)
+        .animation(.linear(duration: 0.08), value: levels)
     }
 }
 
