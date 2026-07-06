@@ -1,115 +1,172 @@
 import SwiftUI
 
-/// The floating popup shown at the top of the screen. Adapts to the current
-/// state: sign in → meeting detected (Record) → recording (level + Stop) →
-/// processing → done.
+/// Compact floating pill shown at the top of the screen. States:
+/// sign in → ready → recording (with Stop & summarize / Discard / Collapse) →
+/// processing → done (auto-dismisses).
 struct RecorderPopup: View {
     @EnvironmentObject private var model: AppViewModel
     @EnvironmentObject private var client: SupabaseClient
 
+    @State private var collapsed = false
+
+    private let shape = RoundedRectangle(cornerRadius: 18, style: .continuous)
+
     var body: some View {
-        content
-            .frame(width: 340)
-            .padding(16)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
-            .overlay(alignment: .topTrailing) { closeButton }
-            .padding(8)
+        card
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(.regularMaterial, in: shape)
+            .overlay(shape.strokeBorder(Color.primary.opacity(0.07)))
+            .shadow(color: .black.opacity(0.22), radius: 16, y: 6)
+            .padding(12)
+            .fixedSize()
+            .onChange(of: model.isRecording) { recording in
+                if recording { collapsed = false }
+            }
     }
 
     @ViewBuilder
-    private var content: some View {
+    private var card: some View {
         if !client.isAuthenticated {
-            SignInView()
+            SignInView().frame(width: 300)
+        } else if let done = model.doneFlash {
+            doneRow(done)
         } else if model.isRecording {
-            recordingView
+            if collapsed { collapsedRow } else { recordingRow }
         } else if let status = model.activeStatus {
-            processingView(status)
+            processingRow(status)
         } else {
-            readyView
+            readyRow
         }
     }
 
-    // MARK: States
+    // MARK: Rows
 
-    private var readyView: some View {
-        VStack(spacing: 12) {
-            Label(model.meetDetector.isMeetActive ? "Google Meet detected" : "Ready to record",
-                  systemImage: "video.fill")
-                .font(.headline)
-                .foregroundStyle(model.meetDetector.isMeetActive ? .green : .primary)
-            Text("Capture the meeting audio and your mic, then get an AI summary in Notion.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-            Button {
-                Task { await model.startRecording() }
-            } label: {
-                Label("Start recording", systemImage: "record.circle")
-                    .frame(maxWidth: .infinity)
+    private var readyRow: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "waveform")
+                .foregroundStyle(.tint)
+                .font(.title3)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(model.meetDetector.isMeetActive ? "Meeting detected" : "Winday Notetaker")
+                    .font(.subheadline.weight(.semibold))
+                Text("Start an AI meeting note")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 10)
+            Button { Task { await model.startRecording() } } label: {
+                Label("Record", systemImage: "record.circle")
             }
             .buttonStyle(.borderedProminent)
-            .controlSize(.large)
+            .controlSize(.small)
+            closeButton
         }
     }
 
-    private var recordingView: some View {
-        VStack(spacing: 12) {
-            HStack(spacing: 8) {
-                Circle().fill(.red).frame(width: 8, height: 8)
-                Text("Recording…").font(.headline)
-            }
-            LevelBar(level: model.recorder.level)
-            Button(role: .destructive) {
-                Task { await model.stopRecordingAndProcess() }
-            } label: {
-                Label("Stop & summarize", systemImage: "stop.circle.fill")
-                    .frame(maxWidth: .infinity)
+    private var recordingRow: some View {
+        HStack(spacing: 10) {
+            RecordingDot()
+            ElapsedText(start: model.recordingStartedAt ?? Date())
+                .font(.subheadline.weight(.semibold).monospacedDigit())
+            MiniLevel(level: model.recorder.level).frame(width: 40)
+            Spacer(minLength: 10)
+            Button { Task { await model.stopRecordingAndProcess() } } label: {
+                Text("Stop & summarize")
             }
             .buttonStyle(.borderedProminent)
-            .controlSize(.large)
-            .tint(.red)
+            .controlSize(.small)
+            Menu {
+                Button { collapsed = true } label: { Label("Collapse", systemImage: "chevron.up") }
+                Button(role: .destructive) {
+                    Task { await model.cancelRecording() }
+                } label: { Label("Discard recording", systemImage: "trash") }
+            } label: {
+                Image(systemName: "ellipsis")
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .frame(width: 18)
         }
     }
 
-    private func processingView(_ status: String) -> some View {
-        VStack(spacing: 12) {
+    private var collapsedRow: some View {
+        HStack(spacing: 8) {
+            RecordingDot()
+            ElapsedText(start: model.recordingStartedAt ?? Date())
+                .font(.subheadline.weight(.semibold).monospacedDigit())
+            Image(systemName: "chevron.down").font(.caption2).foregroundStyle(.secondary)
+        }
+        .contentShape(Rectangle())
+        .onTapGesture { collapsed = false }
+        .help("Expand")
+    }
+
+    private func processingRow(_ status: String) -> some View {
+        HStack(spacing: 10) {
             ProgressView().controlSize(.small)
-            Text(status).font(.callout).foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
+            Text(status).font(.subheadline).foregroundStyle(.secondary)
         }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 8)
+    }
+
+    private func doneRow(_ message: String) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+            Text(message).font(.subheadline.weight(.medium))
+        }
     }
 
     private var closeButton: some View {
-        Button {
-            model.hidePopup()
-        } label: {
+        Button { model.hidePopup() } label: {
             Image(systemName: "xmark.circle.fill")
                 .foregroundStyle(.secondary)
                 .imageScale(.medium)
         }
         .buttonStyle(.plain)
-        .padding(6)
         .help("Hide")
     }
 }
 
-/// Simple live level meter (0...1).
-private struct LevelBar: View {
-    let level: Float
+// MARK: - Small pieces
+
+private struct RecordingDot: View {
+    @State private var dim = false
     var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "mic.fill").foregroundStyle(.red).font(.caption)
-            GeometryReader { geo in
-                ZStack(alignment: .leading) {
-                    Capsule().fill(.quaternary)
-                    Capsule().fill(.green)
-                        .frame(width: max(2, CGFloat(min(level, 1)) * geo.size.width))
-                        .animation(.linear(duration: 0.1), value: level)
+        Circle()
+            .fill(.red)
+            .frame(width: 9, height: 9)
+            .opacity(dim ? 0.3 : 1)
+            .onAppear {
+                withAnimation(.easeInOut(duration: 0.7).repeatForever(autoreverses: true)) {
+                    dim = true
                 }
             }
-            .frame(height: 6)
+    }
+}
+
+private struct ElapsedText: View {
+    let start: Date
+    var body: some View {
+        TimelineView(.periodic(from: Date(), by: 1)) { context in
+            Text(format(context.date.timeIntervalSince(start)))
         }
+    }
+    private func format(_ t: TimeInterval) -> String {
+        let s = max(0, Int(t))
+        return String(format: "%d:%02d", s / 60, s % 60)
+    }
+}
+
+private struct MiniLevel: View {
+    let level: Float
+    var body: some View {
+        GeometryReader { geo in
+            ZStack(alignment: .leading) {
+                Capsule().fill(.quaternary)
+                Capsule().fill(.green)
+                    .frame(width: max(2, CGFloat(min(level, 1)) * geo.size.width))
+                    .animation(.linear(duration: 0.1), value: level)
+            }
+        }
+        .frame(height: 5)
     }
 }

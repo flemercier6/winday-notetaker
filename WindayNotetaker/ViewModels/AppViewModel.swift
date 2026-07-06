@@ -14,6 +14,10 @@ final class AppViewModel: ObservableObject {
     /// Non-nil while a recording or pipeline run is in progress.
     @Published var activeStatus: String?
     @Published var errorMessage: String?
+    /// Set when recording starts (drives the live elapsed timer).
+    @Published var recordingStartedAt: Date?
+    /// Brief success message shown before the popup auto-dismisses.
+    @Published var doneFlash: String?
 
     let recorder = AudioRecorder()
     let meetDetector = MeetDetector()
@@ -110,6 +114,7 @@ final class AppViewModel: ObservableObject {
             recorder.targetWindowID = meetDetector.meetWindowID
             try await recorder.start(to: url)
             recordingMeetingID = meeting.id
+            recordingStartedAt = Date()
             meetings.insert(meeting, at: 0)
             persist()
         } catch {
@@ -121,6 +126,7 @@ final class AppViewModel: ObservableObject {
         guard let id = recordingMeetingID else { return }
         await recorder.stop()
         recordingMeetingID = nil
+        recordingStartedAt = nil
 
         guard var meeting = meetings.first(where: { $0.id == id }) else { return }
         meeting.endedAt = Date()
@@ -128,6 +134,24 @@ final class AppViewModel: ObservableObject {
         update(meeting)
 
         await runPipeline(for: meeting)
+    }
+
+    /// Stop recording and DISCARD it — no transcript, no summary. Removes the
+    /// in-progress meeting and its audio file, then hides the popup.
+    func cancelRecording() async {
+        guard let id = recordingMeetingID else { return }
+        await recorder.stop()
+        recordingMeetingID = nil
+        recordingStartedAt = nil
+
+        if let meeting = meetings.first(where: { $0.id == id }),
+           let url = meeting.audioFileURL {
+            try? FileManager.default.removeItem(at: url)
+        }
+        meetings.removeAll { $0.id == id }
+        persist()
+        activeStatus = nil
+        hidePopup()
     }
 
     // MARK: - Pipeline
@@ -146,8 +170,13 @@ final class AppViewModel: ObservableObject {
             }
             update(result)
             activeStatus = nil
-            // Meeting handled — hide the popup shortly after unless still in a call.
-            updatePopup(meetingLikely: meetDetector.meetingLikely)
+            // Flash a confirmation, then auto-dismiss the popup.
+            doneFlash = result.notionPageURL != nil ? "Sent to Notion" : "Summary ready"
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: 2_500_000_000)
+                self?.doneFlash = nil
+                self?.hidePopup()
+            }
         } catch {
             var failed = meeting
             failed.status = .failed
