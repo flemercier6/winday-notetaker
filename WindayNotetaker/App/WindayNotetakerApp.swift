@@ -6,8 +6,15 @@ struct WindayNotetakerApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     var body: some Scene {
-        MenuBarExtra("Winday Notetaker", image: "WindayLogo") {
+        MenuBarExtra {
             MenuBarContent()
+        } label: {
+            // Constrain the icon to the menu-bar height (the raw asset is large).
+            Image("WindayLogo")
+                .renderingMode(.template)
+                .resizable()
+                .scaledToFit()
+                .frame(width: 18, height: 18)
         }
 
         Settings {
