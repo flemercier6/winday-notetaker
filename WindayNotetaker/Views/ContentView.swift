@@ -91,7 +91,9 @@ struct ContentView: View {
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
         ToolbarItem(placement: .status) {
-            if let status = model.activeStatus {
+            if model.isRecording {
+                RecordingLevelView(recorder: model.recorder)
+            } else if let status = model.activeStatus {
                 HStack(spacing: 6) {
                     ProgressView().controlSize(.small)
                     Text(status).foregroundStyle(.secondary)
@@ -114,6 +116,25 @@ struct ContentView: View {
                 }
                 .help("Start recording the current call")
             }
+        }
+    }
+}
+
+/// Live microphone level shown while recording — immediate feedback that audio
+/// is actually being captured.
+private struct RecordingLevelView: View {
+    @ObservedObject var recorder: AudioRecorder
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "mic.fill").foregroundStyle(.red).font(.caption)
+            ZStack(alignment: .leading) {
+                Capsule().fill(.quaternary).frame(width: 90, height: 6)
+                Capsule().fill(.green)
+                    .frame(width: max(2, CGFloat(min(recorder.level, 1)) * 90), height: 6)
+                    .animation(.linear(duration: 0.1), value: recorder.level)
+            }
+            Text("Recording").font(.caption).foregroundStyle(.secondary)
         }
     }
 }

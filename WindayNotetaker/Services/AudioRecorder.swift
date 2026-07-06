@@ -3,26 +3,31 @@ import AVFoundation
 import ScreenCaptureKit
 import Combine
 
-/// Records a meeting by mixing two sources into one file:
-///   1. System audio (the remote participants you hear) via ScreenCaptureKit.
-///   2. Your microphone (your side of the call) via AVAudioEngine.
+/// Records a meeting into a single 16-bit PCM WAV by mixing two sources:
+///   1. Your microphone (your side) — a direct tap on `AVAudioEngine.inputNode`.
+///   2. System audio (remote participants) — captured via ScreenCaptureKit and
+///      summed into the mic stream in software.
 ///
-/// The two streams are summed by an `AVAudioEngine` graph and written to a
-/// single `.caf` file, ready to upload to Deepgram.
+/// The microphone tap is the master clock: for every mic buffer we pull the
+/// matching amount of system audio from a FIFO and sum them. Nothing is routed
+/// to the speakers, so there is no monitoring/echo, and the input node is the
+/// canonical (reliable) way to capture the mic.
 ///
-/// Requires macOS 13+ (ScreenCaptureKit audio capture) and Screen Recording +
-/// Microphone permissions (granted by the user on first run).
+/// Requires macOS 13+ (ScreenCaptureKit audio) and Screen Recording +
+/// Microphone permissions.
 @MainActor
 final class AudioRecorder: NSObject, ObservableObject {
     enum RecorderError: LocalizedError {
         case noDisplay
         case micDenied
+        case noMicInput
         case engineFailed(String)
 
         var errorDescription: String? {
             switch self {
             case .noDisplay: return "No display available to capture system audio from."
             case .micDenied: return "Microphone access is off. Enable it in System Settings → Privacy & Security → Microphone, then try again."
+            case .noMicInput: return "No microphone input device was found."
             case let .engineFailed(m): return "Audio engine failed to start: \(m)"
             }
         }
@@ -32,29 +37,27 @@ final class AudioRecorder: NSObject, ObservableObject {
     @Published private(set) var level: Float = 0   // 0...1 rough input level for the UI
 
     private var stream: SCStream?
-    private let engine = AVAudioEngine()
-    private var sourceNode: AVAudioSourceNode?
-    private var recordMixer: AVAudioMixerNode?
-    private var outputFile: AVAudioFile?
+    private var engine: AVAudioEngine?
+    private var mixer: FileMixer?
 
-    /// Canonical mixing format: 48 kHz stereo float, matches SCStream output.
-    /// `nonisolated` so the SCStream callback (a background queue) can read it.
+    /// Canonical mixing format: 48 kHz stereo float. `nonisolated` so the
+    /// SCStream callback (a background queue) can read it.
     private nonisolated let mixFormat = AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 2)!
 
-    /// Thread-safe FIFO holding system-audio samples awaiting the render block.
+    /// System-audio samples (48 kHz stereo, interleaved) awaiting the mic tap.
+    /// `nonisolated` so the SCStream callback can enqueue into it.
     private nonisolated let systemAudioFIFO = SampleFIFO()
-    private var converter: AVAudioConverter?
 
     /// Starts recording to `url` (a `.wav` file). Throws if capture can't start.
     func start(to url: URL) async throws {
         guard !isRecording else { return }
 
         // macOS only feeds live microphone audio once the user has authorized
-        // it. Without this explicit request, the input node silently yields
-        // zeros and you get a silent recording (no transcript).
+        // it. Without this the input node silently yields zeros (silent file).
         let micGranted = await AVCaptureDevice.requestAccess(for: .audio)
         guard micGranted else { throw RecorderError.micDenied }
 
+        systemAudioFIFO.reset()
         try await startSystemAudioCapture()
         try startEngine(writingTo: url)
 
@@ -66,11 +69,11 @@ final class AudioRecorder: NSObject, ObservableObject {
         isRecording = false
         level = 0
 
-        recordMixer?.removeTap(onBus: 0)
-        engine.stop()
-        outputFile = nil
-        sourceNode = nil
-        recordMixer = nil
+        engine?.inputNode.removeTap(onBus: 0)
+        engine?.stop()
+        engine = nil
+        mixer?.close()
+        mixer = nil
 
         if let stream {
             try? await stream.stopCapture()
@@ -87,8 +90,6 @@ final class AudioRecorder: NSObject, ObservableObject {
         guard let display = content.displays.first else { throw RecorderError.noDisplay }
 
         // Capture audio for the whole display (includes the Google Meet tab).
-        // To capture a single app instead, build the filter from that app's
-        // SCRunningApplication — see MeetDetector.
         let filter = SCContentFilter(display: display, excludingApplications: [], exceptingWindows: [])
 
         let config = SCStreamConfiguration()
@@ -109,56 +110,30 @@ final class AudioRecorder: NSObject, ObservableObject {
         self.stream = stream
     }
 
-    // MARK: - Engine graph (mic + system → file)
+    // MARK: - Microphone tap (master clock) → mixed WAV
 
     private func startEngine(writingTo url: URL) throws {
+        // Fresh engine each time, created AFTER microphone access is granted so
+        // its input unit initializes with mic access.
+        let engine = AVAudioEngine()
+        self.engine = engine
+
         let input = engine.inputNode
-        let micFormat = input.inputFormat(forBus: 0)
-
-        // Source node feeds buffered system-audio samples into the mixer.
-        let source = AVAudioSourceNode(format: mixFormat) { [systemAudioFIFO] _, _, frameCount, audioBufferList -> OSStatus in
-            systemAudioFIFO.render(into: audioBufferList, frameCount: frameCount)
-            return noErr
+        let micFormat = input.outputFormat(forBus: 0)
+        guard micFormat.sampleRate > 0, micFormat.channelCount > 0 else {
+            throw RecorderError.noMicInput
         }
-        self.sourceNode = source
 
-        // Dedicated mixer we TAP to write the file. Kept separate from
-        // mainMixerNode so we can mute the speakers (mainMixer) WITHOUT
-        // silencing the recording.
-        let recordMixer = AVAudioMixerNode()
-        self.recordMixer = recordMixer
+        let mixer = try FileMixer(url: url, micFormat: micFormat, mixFormat: mixFormat, fifo: systemAudioFIFO)
+        mixer.onLevel = { [weak self] peak in
+            Task { @MainActor in self?.level = peak }
+        }
+        self.mixer = mixer
 
-        engine.attach(source)
-        engine.attach(recordMixer)
-        engine.connect(source, to: recordMixer, format: mixFormat)
-        engine.connect(input, to: recordMixer, format: micFormat)
-        engine.connect(recordMixer, to: engine.mainMixerNode, format: mixFormat)
-
-        // CRITICAL: mute the hardware output. We only want to RECORD, not play
-        // the mix back through the speakers — otherwise the mic re-captures it
-        // and you get an echo / feedback loop. The tap below sits on
-        // recordMixer (pre-mute), so the file still gets full-volume audio.
-        engine.mainMixerNode.outputVolume = 0
-
-        // Write a standard 16-bit PCM WAV — Deepgram rejects CAF/float32 as
-        // "corrupt or unsupported". AVAudioFile converts the float tap buffers
-        // to Int16 on disk automatically (processing format stays float).
-        let wavSettings: [String: Any] = [
-            AVFormatIDKey: kAudioFormatLinearPCM,
-            AVSampleRateKey: mixFormat.sampleRate,
-            AVNumberOfChannelsKey: 2,
-            AVLinearPCMBitDepthKey: 16,
-            AVLinearPCMIsFloatKey: false,
-            AVLinearPCMIsBigEndianKey: false,
-            AVLinearPCMIsNonInterleaved: false,
-        ]
-        let file = try AVAudioFile(forWriting: url, settings: wavSettings)
-        self.outputFile = file
-
-        // Tap the dedicated record mixer (full mixed signal) and write to disk.
-        recordMixer.installTap(onBus: 0, bufferSize: 4096, format: mixFormat) { [weak self] buffer, _ in
-            try? self?.outputFile?.write(from: buffer)
-            self?.updateLevel(from: buffer)
+        // Tap the mic directly. Nothing is connected to the engine's output, so
+        // there is no playback (no echo). This block runs on a background thread.
+        input.installTap(onBus: 0, bufferSize: 4096, format: micFormat) { buffer, _ in
+            mixer.writeMic(buffer)
         }
 
         engine.prepare()
@@ -167,14 +142,6 @@ final class AudioRecorder: NSObject, ObservableObject {
         } catch {
             throw RecorderError.engineFailed(error.localizedDescription)
         }
-    }
-
-    private nonisolated func updateLevel(from buffer: AVAudioPCMBuffer) {
-        guard let data = buffer.floatChannelData?[0] else { return }
-        let frames = Int(buffer.frameLength)
-        var peak: Float = 0
-        for i in 0..<frames { peak = max(peak, abs(data[i])) }
-        Task { @MainActor in self.level = peak }
     }
 }
 
@@ -188,20 +155,104 @@ extension AudioRecorder: SCStreamOutput, SCStreamDelegate {
     }
 
     nonisolated func stream(_ stream: SCStream, didStopWithError error: Error) {
-        Task { @MainActor in
-            self.isRecording = false
+        Task { @MainActor in self.isRecording = false }
+    }
+}
+
+// MARK: - File mixer (runs on the mic tap thread)
+
+/// Owns the output file and the mic→mix converter. For each microphone buffer it
+/// converts to 48 kHz stereo, sums in the matching system audio pulled from the
+/// FIFO, and writes one buffer to disk. Lives off the main actor because the mic
+/// tap calls it on a real-time audio thread.
+private final class FileMixer: @unchecked Sendable {
+    var onLevel: (@Sendable (Float) -> Void)?
+
+    private let file: AVAudioFile
+    private let mixFormat: AVAudioFormat
+    private let converter: AVAudioConverter?
+    private let fifo: SampleFIFO
+    private let lock = NSLock()
+    private var closed = false
+
+    init(url: URL, micFormat: AVAudioFormat, mixFormat: AVAudioFormat, fifo: SampleFIFO) throws {
+        self.mixFormat = mixFormat
+        self.fifo = fifo
+        self.converter = micFormat == mixFormat ? nil : AVAudioConverter(from: micFormat, to: mixFormat)
+
+        let wavSettings: [String: Any] = [
+            AVFormatIDKey: kAudioFormatLinearPCM,
+            AVSampleRateKey: mixFormat.sampleRate,
+            AVNumberOfChannelsKey: 2,
+            AVLinearPCMBitDepthKey: 16,
+            AVLinearPCMIsFloatKey: false,
+            AVLinearPCMIsBigEndianKey: false,
+            AVLinearPCMIsNonInterleaved: false,
+        ]
+        self.file = try AVAudioFile(forWriting: url, settings: wavSettings)
+    }
+
+    func close() {
+        lock.lock(); closed = true; lock.unlock()
+    }
+
+    func writeMic(_ micBuffer: AVAudioPCMBuffer) {
+        // 1) Convert the mic buffer to 48 kHz stereo float.
+        let stereo: AVAudioPCMBuffer
+        if let converter {
+            let ratio = mixFormat.sampleRate / micBuffer.format.sampleRate
+            let capacity = AVAudioFrameCount(Double(micBuffer.frameLength) * ratio) + 1024
+            guard let out = AVAudioPCMBuffer(pcmFormat: mixFormat, frameCapacity: capacity) else { return }
+            var fed = false
+            var error: NSError?
+            converter.convert(to: out, error: &error) { _, status in
+                if fed { status.pointee = .noDataNow; return nil }
+                fed = true
+                status.pointee = .haveData
+                return micBuffer
+            }
+            if error != nil { return }
+            stereo = out
+        } else {
+            stereo = micBuffer
         }
+
+        let frames = Int(stereo.frameLength)
+        guard frames > 0, let chans = stereo.floatChannelData else { return }
+        let hasRight = stereo.format.channelCount > 1
+        let left = chans[0]
+        let right = hasRight ? chans[1] : chans[0]
+
+        // 2) Pull the matching amount of system audio (interleaved stereo).
+        var sys = [Float](repeating: 0, count: frames * 2)
+        fifo.dequeue(into: &sys, frames: frames)
+
+        // 3) Sum mic + system in place, clamped to [-1, 1], and track the level.
+        var peak: Float = 0
+        for i in 0..<frames {
+            let l = max(-1, min(1, left[i] + sys[i * 2]))
+            let r = max(-1, min(1, right[i] + sys[i * 2 + 1]))
+            left[i] = l
+            if hasRight { right[i] = r }
+            let a = max(abs(l), abs(r))
+            if a > peak { peak = a }
+        }
+
+        // 4) Write one buffer to disk.
+        lock.lock()
+        let isClosed = closed
+        if !isClosed { try? file.write(from: stereo) }
+        lock.unlock()
+
+        if !isClosed { onLevel?(peak) }
     }
 }
 
 // MARK: - Thread-safe sample FIFO
 
-/// A simple lock-protected float FIFO bridging the SCStream callback thread and
-/// the real-time render thread. Stores interleaved stereo float samples.
-///
-/// Note: a lock-free ring buffer would be preferable for production audio; this
-/// is intentionally simple and good enough for a meeting recorder. The lock is
-/// only held for fast memcpy-style copies.
+/// Lock-protected interleaved-stereo float FIFO bridging the SCStream callback
+/// thread and the mic tap thread. Simple by design (a lock-free ring buffer
+/// would be the production-grade choice).
 private final class SampleFIFO: @unchecked Sendable {
     private var buffer: [Float] = []
     private let lock = NSLock()
@@ -210,40 +261,35 @@ private final class SampleFIFO: @unchecked Sendable {
     func enqueue(_ pcm: AVAudioPCMBuffer) {
         guard let channelData = pcm.floatChannelData else { return }
         let frames = Int(pcm.frameLength)
+        let srcChannels = Int(pcm.format.channelCount)
         var interleaved = [Float](repeating: 0, count: frames * channels)
         for frame in 0..<frames {
             for ch in 0..<channels {
-                let src = channelData[min(ch, Int(pcm.format.channelCount) - 1)]
-                interleaved[frame * channels + ch] = src[frame]
+                interleaved[frame * channels + ch] = channelData[min(ch, srcChannels - 1)][frame]
             }
         }
         lock.lock()
         buffer.append(contentsOf: interleaved)
-        // Cap latency: never let the FIFO grow past ~2 seconds.
-        let maxSamples = 48_000 * channels * 2
+        // Cap latency: never let the FIFO grow past ~3 seconds.
+        let maxSamples = 48_000 * channels * 3
         if buffer.count > maxSamples {
             buffer.removeFirst(buffer.count - maxSamples)
         }
         lock.unlock()
     }
 
-    func render(into abl: UnsafeMutablePointer<AudioBufferList>, frameCount: AVAudioFrameCount) {
-        let needed = Int(frameCount) * channels
+    /// Pops `frames` stereo frames (interleaved) into `out`, zero-filling if the
+    /// FIFO is short (e.g. no system audio playing).
+    func dequeue(into out: inout [Float], frames: Int) {
+        let needed = frames * channels
         lock.lock()
         let available = min(needed, buffer.count)
-        let samples = Array(buffer.prefix(available))
+        for i in 0..<available { out[i] = buffer[i] }
+        if available < needed {
+            for i in available..<needed { out[i] = 0 }
+        }
         if available > 0 { buffer.removeFirst(available) }
         lock.unlock()
-
-        let bufferList = UnsafeMutableAudioBufferListPointer(abl)
-        for (bufferIndex, audioBuffer) in bufferList.enumerated() {
-            guard let dst = audioBuffer.mData?.assumingMemoryBound(to: Float.self) else { continue }
-            let frames = Int(frameCount)
-            for frame in 0..<frames {
-                let idx = frame * channels + min(bufferIndex, channels - 1)
-                dst[frame] = idx < samples.count ? samples[idx] : 0
-            }
-        }
     }
 
     func reset() {
@@ -270,10 +316,8 @@ private extension CMSampleBuffer {
         CMSampleBufferCopyPCMDataIntoAudioBufferList(
             self, at: 0, frameCount: Int32(frames), into: pcm.mutableAudioBufferList)
 
-        // If the source already matches the mix format, return as-is.
         if sourceFormat == format { return pcm }
 
-        // Otherwise convert (sample-rate / layout) into the canonical format.
         guard let converter = AVAudioConverter(from: sourceFormat, to: format),
               let out = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames) else {
             return pcm
