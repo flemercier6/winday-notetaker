@@ -1,23 +1,30 @@
 import SwiftUI
 
-/// Compact floating pill shown at the top of the screen. States:
-/// sign in → ready → recording (with Stop & summarize / Discard / Collapse) →
-/// processing → done (auto-dismisses).
+/// Compact floating pill styled after the Winday CRM Figma design: a light
+/// off-white card in a frosted translucent container, with a blue split button.
+/// States: sign in → ready → recording (Stop & summarize / Discard / Collapse)
+/// → processing → done (auto-dismisses).
 struct RecorderPopup: View {
     @EnvironmentObject private var model: AppViewModel
     @EnvironmentObject private var client: SupabaseClient
 
     @State private var collapsed = false
 
-    private let shape = RoundedRectangle(cornerRadius: 18, style: .continuous)
+    // Palette from the Figma node.
+    private let accent = Color(red: 0.0, green: 0.47, blue: 1.0)          // #0077FF
+    private let cardBG = Color(red: 0.976, green: 0.973, blue: 0.969)     // #F9F8F7
+    private let cardBorder = Color(red: 0.878, green: 0.878, blue: 0.878) // #E0E0E0
+    private let ink = Color.black
 
     var body: some View {
-        card
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
-            .background(.regularMaterial, in: shape)
-            .overlay(shape.strokeBorder(Color.primary.opacity(0.08)))
+        row
+            .padding(.leading, 14)
+            .padding(.trailing, 6)
+            .padding(.vertical, 6)
+            .background(cardBG, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(cardBorder))
             .padding(4)
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             .fixedSize()
             .onChange(of: model.isRecording) { recording in
                 if recording { collapsed = false }
@@ -25,7 +32,7 @@ struct RecorderPopup: View {
     }
 
     @ViewBuilder
-    private var card: some View {
+    private var row: some View {
         if !client.isAuthenticated {
             SignInView().frame(width: 300)
         } else if let done = model.doneFlash {
@@ -42,49 +49,40 @@ struct RecorderPopup: View {
     // MARK: Rows
 
     private var readyRow: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "waveform")
-                .foregroundStyle(.tint)
-                .font(.title3)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(model.meetDetector.isMeetActive ? "Meeting detected" : "Winday Notetaker")
-                    .font(.subheadline.weight(.semibold))
-                Text("Start an AI meeting note")
-                    .font(.caption).foregroundStyle(.secondary)
+        HStack(spacing: 40) {
+            HStack(spacing: 12) {
+                Image(systemName: "waveform")
+                    .font(.system(size: 22, weight: .bold))
+                    .foregroundStyle(ink)
+                Text("Start AI meeting Note")
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundStyle(ink)
             }
-            Spacer(minLength: 10)
-            Button { Task { await model.startRecording() } } label: {
-                Label("Record", systemImage: "record.circle")
+            SplitButton(title: "Start Transcribing", accent: accent) {
+                Task { await model.startRecording() }
+            } menu: {
+                Button("Hide") { model.hidePopup() }
             }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.small)
-            closeButton
         }
     }
 
     private var recordingRow: some View {
-        HStack(spacing: 10) {
-            RecordingDot()
-            ElapsedText(start: model.recordingStartedAt ?? Date())
-                .font(.subheadline.weight(.semibold).monospacedDigit())
-            MiniLevel(level: model.recorder.level).frame(width: 40)
-            Spacer(minLength: 10)
-            Button { Task { await model.stopRecordingAndProcess() } } label: {
-                Text("Stop & summarize")
+        HStack(spacing: 24) {
+            HStack(spacing: 10) {
+                RecordingDot()
+                ElapsedText(start: model.recordingStartedAt ?? Date())
+                    .font(.system(size: 15, weight: .semibold).monospacedDigit())
+                    .foregroundStyle(ink)
+                MiniLevel(level: model.recorder.level, accent: accent).frame(width: 40)
             }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.small)
-            Menu {
+            SplitButton(title: "Stop & summarize", accent: accent) {
+                Task { await model.stopRecordingAndProcess() }
+            } menu: {
                 Button { collapsed = true } label: { Label("Collapse", systemImage: "chevron.up") }
                 Button(role: .destructive) {
                     Task { await model.cancelRecording() }
                 } label: { Label("Discard recording", systemImage: "trash") }
-            } label: {
-                Image(systemName: "ellipsis")
             }
-            .menuStyle(.borderlessButton)
-            .fixedSize()
-            .frame(width: 18)
         }
     }
 
@@ -92,8 +90,10 @@ struct RecorderPopup: View {
         HStack(spacing: 8) {
             RecordingDot()
             ElapsedText(start: model.recordingStartedAt ?? Date())
-                .font(.subheadline.weight(.semibold).monospacedDigit())
-            Image(systemName: "chevron.down").font(.caption2).foregroundStyle(.secondary)
+                .font(.system(size: 15, weight: .semibold).monospacedDigit())
+                .foregroundStyle(ink)
+            Image(systemName: "chevron.down").font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(ink.opacity(0.4))
         }
         .contentShape(Rectangle())
         .onTapGesture { collapsed = false }
@@ -103,25 +103,56 @@ struct RecorderPopup: View {
     private func processingRow(_ status: String) -> some View {
         HStack(spacing: 10) {
             ProgressView().controlSize(.small)
-            Text(status).font(.subheadline).foregroundStyle(.secondary)
+            Text(status).font(.system(size: 14)).foregroundStyle(ink.opacity(0.7))
         }
     }
 
     private func doneRow(_ message: String) -> some View {
         HStack(spacing: 10) {
-            Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
-            Text(message).font(.subheadline.weight(.medium))
+            Image(systemName: "checkmark.circle.fill").foregroundStyle(accent)
+            Text(message).font(.system(size: 14, weight: .medium)).foregroundStyle(ink)
         }
     }
+}
 
-    private var closeButton: some View {
-        Button { model.hidePopup() } label: {
-            Image(systemName: "xmark.circle.fill")
-                .foregroundStyle(.secondary)
-                .imageScale(.medium)
+// MARK: - Split button (text + chevron menu), styled like the Figma design
+
+private struct SplitButton<MenuItems: View>: View {
+    let title: String
+    let accent: Color
+    let action: () -> Void
+    @ViewBuilder var menu: () -> MenuItems
+
+    var body: some View {
+        HStack(spacing: 0) {
+            Button(action: action) {
+                Text(title)
+                    .font(.system(size: 15, weight: .regular))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 9)
+            }
+            .buttonStyle(.plain)
+
+            Rectangle().fill(.white.opacity(0.28)).frame(width: 1, height: 20)
+
+            Menu {
+                menu()
+            } label: {
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .frame(width: 30)
+                    .frame(maxHeight: .infinity)
+                    .contentShape(Rectangle())
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
         }
-        .buttonStyle(.plain)
-        .help("Hide")
+        .background(accent)
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .fixedSize()
     }
 }
 
@@ -157,11 +188,12 @@ private struct ElapsedText: View {
 
 private struct MiniLevel: View {
     let level: Float
+    let accent: Color
     var body: some View {
         GeometryReader { geo in
             ZStack(alignment: .leading) {
-                Capsule().fill(.quaternary)
-                Capsule().fill(.green)
+                Capsule().fill(Color.black.opacity(0.08))
+                Capsule().fill(accent)
                     .frame(width: max(2, CGFloat(min(level, 1)) * geo.size.width))
                     .animation(.linear(duration: 0.1), value: level)
             }
