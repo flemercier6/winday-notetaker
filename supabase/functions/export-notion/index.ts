@@ -1,4 +1,6 @@
-// export-notion — creates a Notion page from a meeting's summary.
+// export-notion — creates a Notion page (a new row in a database) from a
+// meeting's summary. Title = the meeting date; content = the AI summary
+// (summary, key points, prioritized next steps).
 //
 // The Notion integration token lives ONLY here, as the `NOTION_TOKEN` Edge
 // Function secret. The (non-secret) target database id is read from the user's
@@ -71,20 +73,28 @@ function buildPage(databaseId: string, meeting: any) {
   const order: Record<string, number> = { high: 0, medium: 1, low: 2 };
   const rt = (t: string) => [{ type: "text", text: { content: String(t).slice(0, 1990) } }];
 
-  const children: any[] = [
-    { object: "block", type: "heading_2", heading_2: { rich_text: rt("📝 Summary") } },
-    { object: "block", type: "paragraph", paragraph: { rich_text: rt(s.summary ?? "") } },
-  ];
+  // Title = the meeting date (the title property's id is always "title",
+  // regardless of what the column is named in the database).
+  const title = new Date(meeting.started_at).toLocaleString("fr-FR", {
+    dateStyle: "long", timeStyle: "short", timeZone: "Europe/Paris",
+  });
+
+  // Content = the AI summary.
+  const children: any[] = [];
+  if (s.headline) {
+    children.push({ object: "block", type: "heading_2", heading_2: { rich_text: rt(s.headline) } });
+  }
+  children.push({ object: "block", type: "paragraph", paragraph: { rich_text: rt(s.summary ?? "") } });
 
   if (Array.isArray(s.key_points) && s.key_points.length) {
-    children.push({ object: "block", type: "heading_2", heading_2: { rich_text: rt("📌 Key points") } });
+    children.push({ object: "block", type: "heading_3", heading_3: { rich_text: rt("Key points") } });
     for (const p of s.key_points) {
       children.push({ object: "block", type: "bulleted_list_item", bulleted_list_item: { rich_text: rt(p) } });
     }
   }
 
   if (Array.isArray(s.next_steps) && s.next_steps.length) {
-    children.push({ object: "block", type: "heading_2", heading_2: { rich_text: rt("✅ Next steps & priorities") } });
+    children.push({ object: "block", type: "heading_3", heading_3: { rich_text: rt("Next steps & priorities") } });
     const steps = [...s.next_steps].sort((a, b) => (order[a.priority] ?? 9) - (order[b.priority] ?? 9));
     for (const step of steps) {
       const parts = [`${emoji[step.priority] ?? ""} ${step.task}`];
@@ -97,13 +107,9 @@ function buildPage(databaseId: string, meeting: any) {
     }
   }
 
-  children.push({ object: "block", type: "divider", divider: {} });
-  const date = new Date(meeting.started_at).toLocaleString();
-  children.push({ object: "block", type: "paragraph", paragraph: { rich_text: rt(`Recorded with Winday Notetaker • ${date}`) } });
-
   return {
     parent: { database_id: databaseId },
-    properties: { title: { title: rt(s.headline ?? meeting.title) } },
+    properties: { title: { title: rt(title) } },
     children,
   };
 }
