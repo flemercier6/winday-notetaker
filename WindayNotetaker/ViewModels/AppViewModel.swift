@@ -1,6 +1,7 @@
 import Foundation
 import Combine
 import AppKit
+import CoreGraphics
 
 /// Central app state and orchestration hub. Runs as a background agent: it
 /// watches for meetings, shows the top recorder pill + the bottom-right progress
@@ -39,9 +40,10 @@ final class AppViewModel: ObservableObject {
     private var dismissed = false
     /// User opened the recorder from the menu with no meeting in progress.
     private var manuallyShown = false
-    /// Auto-end only for recordings tied to a detected Meet window.
-    private var autoEndArmed = false
-    private var pendingEnd: Task<Void, Never>?
+    /// Auto-end: watch the meeting window's liveness while recording.
+    private var endMonitor: Timer?
+    private var recordingMeetWindowID: CGWindowID?
+    private var meetGoneSince: Date?
 
     init() {
         meetings = store.load()
@@ -90,12 +92,6 @@ final class AppViewModel: ObservableObject {
         .receive(on: RunLoop.main)
         .sink { [weak self] in self?.updatePopups() }
         .store(in: &cancellables)
-
-        // Auto-end when the Meet window disappears for a sustained period.
-        meetDetector.$isMeetActive
-            .receive(on: RunLoop.main)
-            .sink { [weak self] active in self?.handleMeetPresence(active) }
-            .store(in: &cancellables)
     }
 
     // MARK: - Popup visibility
@@ -130,17 +126,40 @@ final class AppViewModel: ObservableObject {
 
     // MARK: - End-of-meeting detection
 
-    private func handleMeetPresence(_ active: Bool) {
-        guard isRecording, autoEndArmed else { pendingEnd?.cancel(); pendingEnd = nil; return }
-        if active {
-            pendingEnd?.cancel(); pendingEnd = nil
-        } else if pendingEnd == nil {
-            pendingEnd = Task { @MainActor [weak self] in
-                // Grace period so a quick tab switch doesn't end the meeting.
-                try? await Task.sleep(nanoseconds: 10_000_000_000)
-                guard let self, !Task.isCancelled,
-                      self.isRecording, !self.meetDetector.isMeetActive else { return }
-                await self.stopRecordingAndProcess()
+    private func startEndMonitor() {
+        meetGoneSince = nil
+        endMonitor?.invalidate()
+        endMonitor = Timer.scheduledTimer(withTimeInterval: 2.5, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.checkMeetEnd() }
+        }
+    }
+
+    private func stopEndMonitor() {
+        endMonitor?.invalidate()
+        endMonitor = nil
+        meetGoneSince = nil
+    }
+
+    /// Ends the meeting when the tracked Meet window is gone (or navigated away
+    /// from a Meet tab) for a sustained grace period. Never uses the mic level,
+    /// so muting during the call does not stop the recording.
+    private func checkMeetEnd() {
+        guard isRecording else { stopEndMonitor(); return }
+
+        // If we started without a target (e.g. detected via the mic), adopt a
+        // Meet window if one shows up while recording.
+        if recordingMeetWindowID == nil, let id = meetDetector.meetWindowID {
+            recordingMeetWindowID = id
+        }
+        guard let id = recordingMeetWindowID else { return }   // no Meet to track → manual stop only
+
+        if meetDetector.isMeetWindow(id) {
+            meetGoneSince = nil
+        } else {
+            if meetGoneSince == nil { meetGoneSince = Date() }
+            if let since = meetGoneSince, Date().timeIntervalSince(since) >= 8 {
+                stopEndMonitor()
+                Task { await stopRecordingAndProcess() }
             }
         }
     }
@@ -157,7 +176,7 @@ final class AppViewModel: ObservableObject {
 
         do {
             recorder.targetWindowID = meetDetector.meetWindowID
-            autoEndArmed = (meetDetector.meetWindowID != nil)   // only auto-end real Meet calls
+            recordingMeetWindowID = meetDetector.meetWindowID
             try await recorder.start(to: url)
             recordingMeetingID = meeting.id
             recordingStartedAt = Date()
@@ -165,6 +184,7 @@ final class AppViewModel: ObservableObject {
             dismissed = false
             meetings.insert(meeting, at: 0)
             persist()
+            startEndMonitor()
             updatePopups()
         } catch {
             errorMessage = error.localizedDescription
@@ -173,8 +193,7 @@ final class AppViewModel: ObservableObject {
 
     func stopRecordingAndProcess() async {
         guard let id = recordingMeetingID else { return }
-        pendingEnd?.cancel(); pendingEnd = nil
-        autoEndArmed = false
+        stopEndMonitor()
         await recorder.stop()
         recordingMeetingID = nil
         recordingStartedAt = nil
@@ -189,8 +208,7 @@ final class AppViewModel: ObservableObject {
 
     func cancelRecording() async {
         guard let id = recordingMeetingID else { return }
-        pendingEnd?.cancel(); pendingEnd = nil
-        autoEndArmed = false
+        stopEndMonitor()
         await recorder.stop()
         recordingMeetingID = nil
         recordingStartedAt = nil
