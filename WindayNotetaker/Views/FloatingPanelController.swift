@@ -8,11 +8,16 @@ import SwiftUI
 final class FloatingPanelController {
     private var panel: FloatingPanel?
 
+    private static let autosaveName = "WindayRecorderPanel"
+    private var didInitialPlacement = false
+
     /// Build the panel once with the popup view (environment objects injected).
     func configure(_ rootView: some View) {
         let hosting = NSHostingController(rootView: rootView)
         let panel = FloatingPanel(contentRect: NSRect(x: 0, y: 0, width: 320, height: 80))
         panel.contentViewController = hosting   // window follows SwiftUI size
+        // Remember (and restore) wherever the user drags it — across launches.
+        panel.setFrameAutosaveName(Self.autosaveName)
         self.panel = panel
     }
 
@@ -21,7 +26,15 @@ final class FloatingPanelController {
     func show() {
         guard let panel else { return }
         panel.layoutIfNeeded()
-        reposition()
+        // Only choose a position the very first time (top-center). After that we
+        // never move it, so the user's dragged position sticks.
+        if !didInitialPlacement {
+            didInitialPlacement = true
+            let key = "NSWindow Frame \(Self.autosaveName)"
+            if UserDefaults.standard.object(forKey: key) == nil {
+                reposition()
+            }
+        }
         panel.orderFrontRegardless()
     }
 

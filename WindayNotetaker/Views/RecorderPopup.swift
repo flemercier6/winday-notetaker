@@ -16,9 +16,8 @@ struct RecorderPopup: View {
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
             .background(.regularMaterial, in: shape)
-            .overlay(shape.strokeBorder(Color.primary.opacity(0.07)))
-            .shadow(color: .black.opacity(0.22), radius: 16, y: 6)
-            .padding(12)
+            .overlay(shape.strokeBorder(Color.primary.opacity(0.08)))
+            .padding(4)
             .fixedSize()
             .onChange(of: model.isRecording) { recording in
                 if recording { collapsed = false }
