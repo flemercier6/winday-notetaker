@@ -80,8 +80,8 @@ struct RecorderPopup: View {
                 Image(systemName: "waveform")
                     .font(.system(size: 22, weight: .bold))
                     .foregroundStyle(ink)
-                Text("Start AI meeting Note")
-                    .font(.system(size: 15, weight: .medium))
+                Text("Start AI Meeting Note")
+                    .font(.system(size: 15, weight: .regular))
                     .foregroundStyle(ink)
             }
             SplitButton(title: "Start Transcribing", accent: accent) {
