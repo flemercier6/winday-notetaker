@@ -125,7 +125,7 @@ final class SupabaseClient: ObservableObject {
         try await refreshIfNeeded()
         guard let token = session?.accessToken else { throw ClientError.notAuthenticated }
 
-        let url = baseURL.appendingPathComponent("/storage/v1/object/recordings/\(path)")
+        let url = endpoint("/storage/v1/object/recordings/\(path)")
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.setValue(anonKey, forHTTPHeaderField: "apikey")
@@ -158,7 +158,7 @@ final class SupabaseClient: ObservableObject {
         try await refreshIfNeeded()
         guard let token = session?.accessToken else { throw ClientError.notAuthenticated }
 
-        let url = baseURL.appendingPathComponent(path)
+        let url = endpoint(path)
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.setValue(anonKey, forHTTPHeaderField: "apikey")
@@ -184,7 +184,7 @@ final class SupabaseClient: ObservableObject {
         try await refreshIfNeeded()
         guard let token = session?.accessToken else { throw ClientError.notAuthenticated }
 
-        let url = baseURL.appendingPathComponent("/functions/v1/\(name)")
+        let url = endpoint("/functions/v1/\(name)")
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.setValue(anonKey, forHTTPHeaderField: "apikey")
@@ -203,7 +203,7 @@ final class SupabaseClient: ObservableObject {
     @discardableResult
     private func request(path: String, body: [String: Any], authenticated: Bool) async throws -> Data {
         guard !anonKey.isEmpty else { throw ClientError.notConfigured }
-        let url = baseURL.appendingPathComponent(path)
+        let url = endpoint(path)
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.setValue(anonKey, forHTTPHeaderField: "apikey")
@@ -230,6 +230,15 @@ final class SupabaseClient: ObservableObject {
             }
             throw ClientError.http(http.statusCode, String(data: data, encoding: .utf8) ?? "")
         }
+    }
+
+    /// Builds a full endpoint URL by plain concatenation. We deliberately avoid
+    /// `URL.appendingPathComponent`, which percent-encodes "?" and thus breaks
+    /// query strings like `?grant_type=refresh_token` (→ 404).
+    private func endpoint(_ path: String) -> URL {
+        var base = baseURL.absoluteString
+        if base.hasSuffix("/") { base.removeLast() }
+        return URL(string: base + path)!
     }
 
     // MARK: - Session persistence (Keychain)
