@@ -77,9 +77,12 @@ struct RecorderPopup: View {
     private var readyRow: some View {
         HStack(spacing: 40) {
             HStack(spacing: 12) {
-                Image(systemName: "waveform")
-                    .font(.system(size: 22, weight: .bold))
+                Image("WindayLogo")
+                    .resizable()
+                    .renderingMode(.template)
+                    .scaledToFit()
                     .foregroundStyle(ink)
+                    .frame(width: 24, height: 24)
                 Text("Start AI Meeting Note")
                     .font(.system(size: 15, weight: .regular))
                     .foregroundStyle(ink)

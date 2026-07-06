@@ -6,7 +6,7 @@ struct WindayNotetakerApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     var body: some Scene {
-        MenuBarExtra("Winday Notetaker", systemImage: "waveform.circle.fill") {
+        MenuBarExtra("Winday Notetaker", image: "WindayLogo") {
             MenuBarContent()
         }
 
