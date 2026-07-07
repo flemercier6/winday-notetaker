@@ -25,6 +25,13 @@ struct MenuBarContent: View {
 
         Button("Settings…") { openSettings() }
 
+        if client.isAuthenticated {
+            Button("Sign out") {
+                client.signOut()
+                model.showPopup()
+            }
+        }
+
         Divider()
 
         Button("Quit Winday Notetaker") { NSApplication.shared.terminate(nil) }
