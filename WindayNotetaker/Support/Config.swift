@@ -10,6 +10,18 @@ import Combine
 final class Config: ObservableObject {
     static let shared = Config()
 
+    /// The default instruction sent to Gemini for the summary. Users can
+    /// customize it in Settings; the JSON output structure (summary, key
+    /// points, next steps) and speaker identification stay enforced server-side.
+    static let defaultSummaryPrompt = """
+    You are an expert sales/meeting assistant for Winday CRM. Analyze the \
+    following meeting transcript and produce structured notes. The speaker \
+    labelled "You" is the app's user; "Participant 1/2/…" are the other \
+    attendees. Be concise and action-oriented. For next_steps, infer the owner \
+    when possible (the user vs a participant) and assign a realistic priority. \
+    Write in the same language as the transcript.
+    """
+
     // MARK: Supabase connection (publishable, from Info.plist)
 
     let supabaseURL: String
@@ -30,6 +42,14 @@ final class Config: ObservableObject {
     @Published var autoExportToNotion: Bool {
         didSet { defaults.set(autoExportToNotion, forKey: "auto_export_notion") }
     }
+    /// User-customizable summary instruction for Gemini (Settings → Summary).
+    @Published var summaryPrompt: String {
+        didSet { defaults.set(summaryPrompt, forKey: "summary_prompt") }
+    }
+    /// Desired summary length: "short" | "medium" | "long".
+    @Published var summaryLength: String {
+        didSet { defaults.set(summaryLength, forKey: "summary_length") }
+    }
 
     private let defaults = UserDefaults.standard
 
@@ -46,6 +66,8 @@ final class Config: ObservableObject {
         // Default ON: once a Notion database is configured, summaries are sent
         // automatically. Users can turn it off in Settings → Notion.
         autoExportToNotion = defaults.object(forKey: "auto_export_notion") as? Bool ?? true
+        summaryPrompt = defaults.string(forKey: "summary_prompt") ?? Self.defaultSummaryPrompt
+        summaryLength = defaults.string(forKey: "summary_length") ?? "medium"
     }
 
     var isNotionConfigured: Bool { !notionDatabaseID.isEmpty }

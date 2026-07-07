@@ -45,4 +45,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.accessory)
         AppViewModel.shared.beginAgent()
     }
+
+    /// Escape hatch when the menu-bar icon is hidden (crowded menu bar / notch):
+    /// launching the app again (Spotlight, Finder, Dock) lands here on the
+    /// running instance and surfaces the recorder popup.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
+        AppViewModel.shared.showPopup()
+        return true
+    }
 }

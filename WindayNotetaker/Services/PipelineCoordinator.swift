@@ -135,6 +135,8 @@ struct PipelineCoordinator {
                                          body: [
                                             "meeting_id": m.id.uuidString,
                                             "gemini_model": config.geminiModel,
+                                            "custom_prompt": config.summaryPrompt,
+                                            "summary_length": config.summaryLength,
                                          ],
                                          as: SummarizeResponse.self)
         m.summary = sr.summary

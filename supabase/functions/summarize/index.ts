@@ -75,7 +75,7 @@ Deno.serve(async (req) => {
     if (!user) return json({ error: "Unauthorized" }, 401);
 
     const admin = createClient(SUPABASE_URL, SERVICE_KEY);
-    const { meeting_id, gemini_model } = await req.json();
+    const { meeting_id, gemini_model, custom_prompt, summary_length } = await req.json();
     const primary = gemini_model || "gemini-flash-latest";
 
     const { data: meeting, error: mErr } = await admin
@@ -101,12 +101,29 @@ Deno.serve(async (req) => {
         `invent names that are not in the list, and never map "You".`
       : `\n\nReturn an empty speaker_map.`;
 
-    const prompt = `You are an expert sales/meeting assistant for Winday CRM. Analyze the ` +
+    // User-customizable instruction (Settings → Summary); structure and speaker
+    // identification stay enforced regardless of the custom text.
+    const defaultInstruction =
+      `You are an expert sales/meeting assistant for Winday CRM. Analyze the ` +
       `following meeting transcript and produce structured notes. The speaker labelled ` +
       `"You" is the app's user; "Participant 1/2/…" are the other attendees. Be concise ` +
       `and action-oriented. For next_steps, infer the owner when possible (the user vs a ` +
       `participant) and assign a realistic priority. Write in the same language as the ` +
-      `transcript.${speakerInstruction}\n\nMeeting title: ${meeting.meeting_title}\n\nTRANSCRIPT:\n${labelled}`;
+      `transcript.`;
+    const baseInstruction = (typeof custom_prompt === "string" && custom_prompt.trim())
+      ? custom_prompt.trim()
+      : defaultInstruction;
+
+    const lengthInstruction = ({
+      short: `\n\nLength: SHORT — a 2–3 sentence summary, at most 3 key points, and only ` +
+             `the most critical next steps.`,
+      medium: ``,
+      long: `\n\nLength: LONG — a detailed multi-paragraph summary covering context, ` +
+            `discussion and decisions, up to 10 key points, and exhaustive next steps.`,
+    } as Record<string, string>)[summary_length ?? "medium"] ?? "";
+
+    const prompt = `${baseInstruction}${lengthInstruction}${speakerInstruction}` +
+      `\n\nMeeting title: ${meeting.meeting_title}\n\nTRANSCRIPT:\n${labelled}`;
 
     const body = {
       contents: [{ role: "user", parts: [{ text: prompt }] }],
