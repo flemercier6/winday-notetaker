@@ -34,6 +34,7 @@ final class SupabaseClient: ObservableObject {
 
     private let baseURL: URL
     private let anonKey: String
+    private let sessionKey: String
     private let urlSession = URLSession.shared
 
     var isAuthenticated: Bool { session != nil }
@@ -41,9 +42,16 @@ final class SupabaseClient: ObservableObject {
     var email: String? { session?.email }
 
     init(config: Config = .shared) {
-        self.baseURL = URL(string: config.supabaseURL) ?? URL(string: "https://invalid.invalid")!
+        let url = URL(string: config.supabaseURL) ?? URL(string: "https://invalid.invalid")!
+        self.baseURL = url
         self.anonKey = config.supabaseAnonKey
-        self.session = Self.loadSession()
+        // Scope the stored session to the Supabase project (its host ref), so a
+        // session left over from a different project — e.g. after repointing the
+        // backend — is never reused. Its token would be rejected by the new
+        // project and silently break uploads/Edge Functions.
+        let ref = url.host?.split(separator: ".").first.map(String.init) ?? "default"
+        self.sessionKey = "wn_session_\(ref)"
+        self.session = Self.loadSession(key: sessionKey)
     }
 
     // MARK: - Auth (email + password)
@@ -88,12 +96,12 @@ final class SupabaseClient: ObservableObject {
             email: token.user.email
         )
         self.session = session
-        Self.saveSession(session)
+        saveSession(session)
     }
 
     func signOut() {
         session = nil
-        Self.saveSession(nil)
+        saveSession(nil)
     }
 
     private func refreshIfNeeded() async throws {
@@ -114,7 +122,7 @@ final class SupabaseClient: ObservableObject {
             email: token.user.email
         )
         self.session = refreshed
-        Self.saveSession(refreshed)
+        saveSession(refreshed)
     }
 
     // MARK: - Storage
@@ -237,9 +245,7 @@ final class SupabaseClient: ObservableObject {
 
     // MARK: - Session persistence (Keychain)
 
-    private static let sessionKey = "supabase_session"
-
-    private static func saveSession(_ session: Session?) {
+    private func saveSession(_ session: Session?) {
         guard let session, let data = try? JSONEncoder().encode(session),
               let json = String(data: data, encoding: .utf8) else {
             Keychain.set(nil, for: sessionKey)
@@ -248,8 +254,8 @@ final class SupabaseClient: ObservableObject {
         Keychain.set(json, for: sessionKey)
     }
 
-    private static func loadSession() -> Session? {
-        guard let json = Keychain.get(sessionKey), let data = json.data(using: .utf8) else { return nil }
+    private static func loadSession(key: String) -> Session? {
+        guard let json = Keychain.get(key), let data = json.data(using: .utf8) else { return nil }
         return try? JSONDecoder().decode(Session.self, from: data)
     }
 
