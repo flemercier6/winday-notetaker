@@ -42,8 +42,21 @@ const responseSchema = {
         required: ["task", "priority"],
       },
     },
+    // Identified speakers: which "Participant N" is which known participant.
+    // Only confident mappings; [] when unsure.
+    speaker_map: {
+      type: "ARRAY",
+      items: {
+        type: "OBJECT",
+        properties: {
+          from: { type: "STRING" },
+          to: { type: "STRING" },
+        },
+        required: ["from", "to"],
+      },
+    },
   },
-  required: ["headline", "summary", "key_points", "next_steps"],
+  required: ["headline", "summary", "key_points", "next_steps", "speaker_map"],
 };
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -74,12 +87,26 @@ Deno.serve(async (req) => {
 
     const labelled = utterances.map((u: any) => `${u.speaker}: ${u.text}`).join("\n");
 
+    // Known participants (from enrich-meeting) → let the model identify who the
+    // diarized "Participant N" voices actually are, from conversational cues.
+    const participants: any[] = meeting.metadata?.participants ?? [];
+    const candidateNames = [...new Set(
+      participants.filter((p) => !p.is_self && p.name).map((p) => String(p.name)),
+    )];
+    const speakerInstruction = candidateNames.length
+      ? `\n\nKnown participants in this call (besides the user): ${candidateNames.join(", ")}. ` +
+        `Using conversational cues (introductions, people addressing each other by name), fill ` +
+        `speaker_map with entries mapping diarized labels (e.g. "Participant 1") to one of these ` +
+        `exact names — ONLY when you are confident. Leave speaker_map empty otherwise. Never ` +
+        `invent names that are not in the list, and never map "You".`
+      : `\n\nReturn an empty speaker_map.`;
+
     const prompt = `You are an expert sales/meeting assistant for Winday CRM. Analyze the ` +
       `following meeting transcript and produce structured notes. The speaker labelled ` +
       `"You" is the app's user; "Participant 1/2/…" are the other attendees. Be concise ` +
       `and action-oriented. For next_steps, infer the owner when possible (the user vs a ` +
       `participant) and assign a realistic priority. Write in the same language as the ` +
-      `transcript.\n\nMeeting title: ${meeting.meeting_title}\n\nTRANSCRIPT:\n${labelled}`;
+      `transcript.${speakerInstruction}\n\nMeeting title: ${meeting.meeting_title}\n\nTRANSCRIPT:\n${labelled}`;
 
     const body = {
       contents: [{ role: "user", parts: [{ text: prompt }] }],
@@ -95,12 +122,30 @@ Deno.serve(async (req) => {
     if (!text) return json({ error: "Gemini returned no content" }, 502);
     const summary = JSON.parse(text);
 
+    // Apply confident speaker identifications to the transcript: relabel the
+    // diarized "Participant N" utterances with the identified names.
+    const speakerMap = new Map<string, string>();
+    for (const m of summary.speaker_map ?? []) {
+      if (m?.from && m?.to && m.from !== "You" && candidateNames.includes(m.to)) {
+        speakerMap.set(m.from, m.to);
+      }
+    }
     const metadata = { ...(meeting.metadata ?? {}), summary };
+    let transcriptText = labelled;
+    if (speakerMap.size) {
+      const renamed = utterances.map((u: any) => ({
+        ...u,
+        speaker: speakerMap.get(u.speaker) ?? u.speaker,
+      }));
+      metadata.transcript = { ...(meeting.metadata?.transcript ?? {}), utterances: renamed };
+      transcriptText = renamed.map((u: any) => `${u.speaker}: ${u.text}`).join("\n");
+    }
 
     // Keep meeting_title as recorded (the calendar event's name) — the AI
     // headline lives in metadata.summary.headline for display purposes.
     await admin.from("meetings").update({
       summary: summary.summary ?? "",
+      transcript: transcriptText,
       metadata,
       status: "ready",
       last_error: null,

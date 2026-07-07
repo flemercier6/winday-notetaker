@@ -344,6 +344,9 @@ final class AppViewModel: ObservableObject {
                 m = try await pipeline.transcribeOnly(m)
             }
             if m.summary == nil {
+                // Refresh participant info first (best-effort) so the summary
+                // can name the speakers.
+                _ = try? await client.invokeRaw("enrich-meeting", body: ["meeting_id": m.id.uuidString])
                 activeStatus = PipelineCoordinator.Stage.summarizing.rawValue
                 m = try await pipeline.summarizeOnly(m)
             }

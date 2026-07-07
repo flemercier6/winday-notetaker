@@ -81,6 +81,11 @@ struct PipelineCoordinator {
         onStage(.transcribing)
         meeting = try await transcribeOnly(meeting)
 
+        // 2b) Resolve who was in the call (calendar attendees + Meet API) and
+        //     link them to CRM contacts. Best-effort: never fails the pipeline,
+        //     and summarize uses the names to identify who is speaking.
+        _ = try? await client.invokeRaw("enrich-meeting", body: ["meeting_id": meeting.id.uuidString])
+
         // 3) Summarize — KEEP the transcript if this fails.
         onStage(.summarizing)
         do {
