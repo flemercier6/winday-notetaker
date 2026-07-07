@@ -398,18 +398,25 @@ enum AudioCompressor {
         writer.startSession(atSourceTime: .zero)
 
         let queue = DispatchQueue(label: "com.winday.audiocompress")
+        var finished = false   // serial queue → safe without a lock; prevents double-resume
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
             writerInput.requestMediaDataWhenReady(on: queue) {
+                if finished { return }
                 while writerInput.isReadyForMoreMediaData {
                     if let sample = readerOutput.copyNextSampleBuffer() {
                         if !writerInput.append(sample) {
+                            finished = true
                             reader.cancelReading()
+                            writerInput.markAsFinished()
+                            writer.cancelWriting()
                             cont.resume(throwing: writer.error ?? err("append"))
                             return
                         }
                     } else {
+                        finished = true
                         writerInput.markAsFinished()
                         if reader.status == .failed {
+                            writer.cancelWriting()
                             cont.resume(throwing: reader.error ?? err("read"))
                         } else {
                             writer.finishWriting {
