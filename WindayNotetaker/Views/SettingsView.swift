@@ -78,13 +78,6 @@ struct SettingsView: View {
                 Text("Default: gemini-flash-latest (always points at the newest Flash).")
                     .font(.caption).foregroundStyle(.secondary)
             }
-            Section {
-                Button("Save model & Notion settings to backend") {
-                    Task { await model.syncSettings() }
-                }
-                Text("Settings are also synced automatically before each meeting is processed.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
         }
         .formStyle(.grouped)
     }

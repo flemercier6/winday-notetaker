@@ -70,7 +70,6 @@ struct SignInView: View {
                 case .signIn: try await client.signIn(email: email, password: password)
                 case .signUp: try await client.signUp(email: email, password: password)
                 }
-                await model.syncSettings()
             } catch {
                 self.error = error.localizedDescription
             }
