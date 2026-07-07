@@ -97,6 +97,17 @@ final class AppViewModel: ObservableObject {
 
         // Surface the correct popup immediately on launch (e.g. sign-in).
         updatePopups()
+
+        // Recovery: if a previous run left a meeting failed with its audio still
+        // on disk, surface it so the user can Retry (e.g. after updating the app).
+        // The transcript/summary regenerate from the saved recording — nothing is
+        // re-recorded.
+        if let failed = meetings.first(where: { m in
+            guard m.status == .failed, let url = m.audioFileURL else { return false }
+            return FileManager.default.fileExists(atPath: url.path)
+        }) {
+            presentFailure(failed)
+        }
     }
 
     // MARK: - Popup visibility
