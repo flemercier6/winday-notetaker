@@ -87,11 +87,16 @@ final class AppViewModel: ObservableObject {
             $failedMeeting.map { _ in () }.eraseToAnyPublisher(),
             recorder.$isRecording.map { _ in () }.eraseToAnyPublisher(),
             meetDetector.$isMeetActive.map { _ in () }.eraseToAnyPublisher(),
-            meetDetector.$micInUse.map { _ in () }.eraseToAnyPublisher()
+            meetDetector.$micInUse.map { _ in () }.eraseToAnyPublisher(),
+            // React to sign-in / sign-out so the sign-in popup shows/hides.
+            client.$session.map { _ in () }.eraseToAnyPublisher()
         )
         .receive(on: RunLoop.main)
         .sink { [weak self] in self?.updatePopups() }
         .store(in: &cancellables)
+
+        // Surface the correct popup immediately on launch (e.g. sign-in).
+        updatePopups()
     }
 
     // MARK: - Popup visibility
@@ -111,6 +116,16 @@ final class AppViewModel: ObservableObject {
     }
 
     private func updatePopups() {
+        // Signed out: always surface the sign-in popup (RecorderPopup renders
+        // SignInView), and nothing else. Without this the popup only appears on
+        // a detected meeting, so a fresh launch would show no way to sign in.
+        guard client.isAuthenticated else {
+            readyPanel.show()
+            recordingPanel.hide()
+            progressPanel.hide()
+            return
+        }
+
         let likely = meetDetector.meetingLikely
         let hasProgress = activeStatus != nil || doneFlash != nil || failedMeeting != nil
 

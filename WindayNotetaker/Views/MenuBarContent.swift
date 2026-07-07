@@ -23,7 +23,13 @@ struct MenuBarContent: View {
 
         Divider()
 
-        Button("Settings…") { openSettings() }
+        // SettingsLink is the reliable way to open the Settings scene from a
+        // MenuBarExtra on macOS 14+. The manual selector often no-ops there.
+        if #available(macOS 14.0, *) {
+            SettingsLink { Text("Settings…") }
+        } else {
+            Button("Settings…") { openSettings() }
+        }
 
         if client.isAuthenticated {
             Button("Sign out") {
@@ -40,7 +46,6 @@ struct MenuBarContent: View {
 
     private func openSettings() {
         NSApp.activate(ignoringOtherApps: true)
-        // macOS 13+ Settings selector.
         NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
     }
 }
