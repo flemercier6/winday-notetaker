@@ -31,10 +31,14 @@ struct PipelineCoordinator {
                           userInfo: [NSLocalizedDescriptionKey: "No audio file to process."])
         }
 
-        // 1) Upload audio + create the server row (throws — nothing kept yet).
+        // 1) Compress to AAC, upload, then create the server row (throws —
+        //    nothing kept yet). Raw WAV is far too large for Storage on long
+        //    calls; AAC keeps the two channels and fits comfortably.
         onStage(.uploading)
-        let audioPath = "\(userId)/\(meeting.id.uuidString).wav"
-        try await client.uploadRecording(fileURL: audioURL, to: audioPath)
+        let uploadURL = try await AudioCompressor.encodeToM4A(audioURL)
+        defer { try? FileManager.default.removeItem(at: uploadURL) }
+        let audioPath = "\(userId)/\(meeting.id.uuidString).m4a"
+        try await client.uploadRecording(fileURL: uploadURL, to: audioPath, contentType: "audio/mp4")
         meeting.audioPath = audioPath
 
         // The row is created in the Winday CRM's `meetings` table (shared

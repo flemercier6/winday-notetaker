@@ -128,8 +128,8 @@ final class SupabaseClient: ObservableObject {
     // MARK: - Storage
 
     /// Uploads a local file to the private `recordings` bucket at `path`
-    /// (e.g. "<userId>/<meetingId>.caf").
-    func uploadRecording(fileURL: URL, to path: String) async throws {
+    /// (e.g. "<userId>/<meetingId>.m4a").
+    func uploadRecording(fileURL: URL, to path: String, contentType: String = "application/octet-stream") async throws {
         try await refreshIfNeeded()
         guard let token = session?.accessToken else { throw ClientError.notAuthenticated }
 
@@ -138,8 +138,9 @@ final class SupabaseClient: ObservableObject {
         req.httpMethod = "POST"
         req.setValue(anonKey, forHTTPHeaderField: "apikey")
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        req.setValue("audio/wav", forHTTPHeaderField: "Content-Type")
+        req.setValue(contentType, forHTTPHeaderField: "Content-Type")
         req.setValue("true", forHTTPHeaderField: "x-upsert")
+        req.timeoutInterval = 300   // allow time for larger uploads on slow links
 
         let fileData = try Data(contentsOf: fileURL)
         let (data, response) = try await urlSession.upload(for: req, from: fileData)
@@ -193,7 +194,7 @@ final class SupabaseClient: ObservableObject {
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try JSONSerialization.data(withJSONObject: body)
-        req.timeoutInterval = 120
+        req.timeoutInterval = 300   // long meetings can take a while to transcribe
 
         let (data, response) = try await urlSession.data(for: req)
         try Self.check(response, data)

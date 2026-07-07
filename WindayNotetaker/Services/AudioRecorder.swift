@@ -349,6 +349,88 @@ private final class SampleFIFO: @unchecked Sendable {
     }
 }
 
+// MARK: - Compression (WAV → AAC .m4a)
+
+/// Encodes a recorded WAV into a compact stereo AAC `.m4a`, preserving the two
+/// channels (L = you, R = the meeting) so Deepgram multichannel still separates
+/// speakers. Raw 48 kHz/16-bit stereo WAV is ~23 MB/min, which overruns the
+/// Storage upload limit for anything but very short calls; AAC is ~10–15x
+/// smaller, so a long meeting comfortably fits and uploads fast.
+enum AudioCompressor {
+    static func encodeToM4A(_ source: URL) async throws -> URL {
+        let asset = AVURLAsset(url: source)
+        guard let track = try await asset.loadTracks(withMediaType: .audio).first else {
+            throw err("no audio track in the recording")
+        }
+
+        let reader = try AVAssetReader(asset: asset)
+        let readerOutput = AVAssetReaderTrackOutput(track: track, outputSettings: [
+            AVFormatIDKey: kAudioFormatLinearPCM,
+            AVLinearPCMBitDepthKey: 16,
+            AVLinearPCMIsFloatKey: false,
+            AVLinearPCMIsBigEndianKey: false,
+            AVLinearPCMIsNonInterleaved: false,
+        ])
+        guard reader.canAdd(readerOutput) else { throw err("cannot read audio") }
+        reader.add(readerOutput)
+
+        let outURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString + ".m4a")
+        let writer = try AVAssetWriter(outputURL: outURL, fileType: .m4a)
+
+        var stereoLayout = AudioChannelLayout()
+        stereoLayout.mChannelLayoutTag = kAudioChannelLayoutTag_Stereo
+        let layoutData = Data(bytes: &stereoLayout, count: MemoryLayout<AudioChannelLayout>.size)
+
+        let writerInput = AVAssetWriterInput(mediaType: .audio, outputSettings: [
+            AVFormatIDKey: kAudioFormatMPEG4AAC,
+            AVSampleRateKey: 32_000,
+            AVNumberOfChannelsKey: 2,
+            AVChannelLayoutKey: layoutData,
+            AVEncoderBitRateKey: 64_000,   // stereo speech; ~0.5 MB/min
+        ])
+        writerInput.expectsMediaDataInRealTime = false
+        guard writer.canAdd(writerInput) else { throw err("cannot write audio") }
+        writer.add(writerInput)
+
+        guard reader.startReading() else { throw reader.error ?? err("reader start") }
+        guard writer.startWriting() else { throw writer.error ?? err("writer start") }
+        writer.startSession(atSourceTime: .zero)
+
+        let queue = DispatchQueue(label: "com.winday.audiocompress")
+        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+            writerInput.requestMediaDataWhenReady(on: queue) {
+                while writerInput.isReadyForMoreMediaData {
+                    if let sample = readerOutput.copyNextSampleBuffer() {
+                        if !writerInput.append(sample) {
+                            reader.cancelReading()
+                            cont.resume(throwing: writer.error ?? err("append"))
+                            return
+                        }
+                    } else {
+                        writerInput.markAsFinished()
+                        if reader.status == .failed {
+                            cont.resume(throwing: reader.error ?? err("read"))
+                        } else {
+                            writer.finishWriting {
+                                if writer.status == .completed { cont.resume(returning: ()) }
+                                else { cont.resume(throwing: writer.error ?? err("finish")) }
+                            }
+                        }
+                        return
+                    }
+                }
+            }
+        }
+        return outURL
+    }
+
+    private static func err(_ what: String) -> NSError {
+        NSError(domain: "AudioCompressor", code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "Audio compression failed — \(what)."])
+    }
+}
+
 // MARK: - CMSampleBuffer → AVAudioPCMBuffer
 
 private extension CMSampleBuffer {
