@@ -11,6 +11,9 @@ final class AppViewModel: ObservableObject {
     static let shared = AppViewModel()
 
     @Published var meetings: [Meeting] = []
+    /// Imminent calendar calls (from the CRM's Google Calendar), used to arm the
+    /// recorder popup ~1 min before a scheduled call.
+    @Published var upcoming: [UpcomingMeeting] = []
 
     @Published var activeStatus: String?
     @Published var errorMessage: String?
@@ -44,6 +47,8 @@ final class AppViewModel: ObservableObject {
     private var endMonitor: Timer?
     private var recordingMeetWindowID: CGWindowID?
     private var meetGoneSince: Date?
+    /// Polls the calendar for imminent calls.
+    private var upcomingTimer: Timer?
 
     init() {
         meetings = store.load()
@@ -108,6 +113,39 @@ final class AppViewModel: ObservableObject {
         }) {
             presentFailure(failed)
         }
+
+        // Poll the calendar so the recorder can arm ~1 min before a scheduled
+        // call. 30s granularity is enough for a 1-minute lead time.
+        upcomingTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+            Task { @MainActor in await self?.refreshUpcoming() }
+        }
+        Task { await refreshUpcoming() }
+    }
+
+    // MARK: - Calendar arming
+
+    /// The calendar call to record right now, if any: armed from 1 min before its
+    /// start until a bit after it ends, and not already recorded.
+    var armedMeeting: UpcomingMeeting? {
+        let now = Date()
+        let recorded = Set(meetings.compactMap { $0.calendar?.googleEventID })
+        return upcoming.first { ev in
+            guard !recorded.contains(ev.googleEventID) else { return false }
+            let start = ev.start
+            let end = ev.end ?? start.addingTimeInterval(30 * 60)
+            return now >= start.addingTimeInterval(-60) && now <= end.addingTimeInterval(5 * 60)
+        }
+    }
+
+    func refreshUpcoming() async {
+        guard client.isAuthenticated else {
+            if !upcoming.isEmpty { upcoming = [] }
+            return
+        }
+        if let resp = try? await client.fetchUpcomingMeetings() {
+            upcoming = resp.meetings
+        }
+        updatePopups()
     }
 
     // MARK: - Popup visibility
@@ -137,7 +175,9 @@ final class AppViewModel: ObservableObject {
             return
         }
 
-        let likely = meetDetector.meetingLikely
+        // A calendar call armed for now also surfaces the popup, even before the
+        // Meet window is open.
+        let likely = meetDetector.meetingLikely || armedMeeting != nil
         let hasProgress = activeStatus != nil || doneFlash != nil || failedMeeting != nil
 
         if !likely && !isRecording && !hasProgress && !manuallyShown { dismissed = false }
@@ -195,8 +235,12 @@ final class AppViewModel: ObservableObject {
     func startRecording() async {
         errorMessage = nil
         guard client.isAuthenticated else { return }
-        let name = "Meeting \(Date().formatted(date: .abbreviated, time: .shortened))"
+        // If a calendar call is armed, record into its context: use its title and
+        // link the record to the resolved company/contacts.
+        let armed = armedMeeting
+        let name = armed?.title ?? "Meeting \(Date().formatted(date: .abbreviated, time: .shortened))"
         var meeting = Meeting(title: name, status: .recording)
+        meeting.calendar = armed?.context()
         let url = store.newRecordingURL(for: meeting)
         meeting.audioFileURL = url
 

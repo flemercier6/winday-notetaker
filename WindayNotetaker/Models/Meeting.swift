@@ -31,6 +31,9 @@ struct Meeting: Identifiable, Codable, Equatable {
     var notionPageURL: String?
     var status: Status
     var errorMessage: String?
+    /// Set when recording was armed from a calendar event — links the record to
+    /// that event and, via its contacts, to the corresponding CRM company.
+    var calendar: CalendarContext?
 
     init(
         id: UUID = UUID(),
@@ -47,5 +50,66 @@ struct Meeting: Identifiable, Codable, Equatable {
     var duration: TimeInterval? {
         guard let endedAt else { return nil }
         return endedAt.timeIntervalSince(startedAt)
+    }
+}
+
+/// Links a recorded meeting to the calendar event it came from and to the CRM
+/// company/contacts resolved for that event.
+struct CalendarContext: Codable, Equatable {
+    var googleEventID: String
+    var meetURL: String?
+    var companyID: String?
+    var companyName: String?
+    var contactIDs: [String]
+}
+
+/// An imminent calendar call returned by the `upcoming-meetings` Edge Function.
+struct UpcomingMeeting: Codable, Equatable, Identifiable {
+    let googleEventID: String
+    let title: String
+    let startISO: String
+    let endISO: String?
+    let meetURL: String?
+    let companyID: String?
+    let companyName: String?
+    let contactIDs: [String]
+
+    var id: String { googleEventID }
+
+    enum CodingKeys: String, CodingKey {
+        case googleEventID = "google_event_id"
+        case title
+        case startISO = "start"
+        case endISO = "end"
+        case meetURL = "meet_url"
+        case companyID = "company_id"
+        case companyName = "company_name"
+        case contactIDs = "contact_ids"
+    }
+
+    var start: Date { Self.iso.date(from: startISO) ?? .distantFuture }
+    var end: Date? { endISO.flatMap { Self.iso.date(from: $0) } }
+
+    private static let iso: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime]
+        return f
+    }()
+
+    func context() -> CalendarContext {
+        CalendarContext(googleEventID: googleEventID, meetURL: meetURL,
+                        companyID: companyID, companyName: companyName, contactIDs: contactIDs)
+    }
+}
+
+struct UpcomingResponse: Codable {
+    let calendarConnected: Bool
+    let meetings: [UpcomingMeeting]
+    let error: String?
+
+    enum CodingKeys: String, CodingKey {
+        case calendarConnected = "calendar_connected"
+        case meetings
+        case error
     }
 }

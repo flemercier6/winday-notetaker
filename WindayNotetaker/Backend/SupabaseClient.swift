@@ -157,7 +157,24 @@ final class SupabaseClient: ObservableObject {
         try await postREST(path: "/rest/v1/meetings", body: payload, prefer: "return=minimal")
     }
 
-    private func postREST(path: String, body: [String: Any], prefer: String) async throws {
+    /// Links a meeting to CRM contacts (which carry the company), so the record
+    /// shows up under the right company. `workspace_id` is nullable, so we omit it.
+    func linkMeetingContacts(meetingID: String, contactIDs: [String]) async throws {
+        guard let userId, !contactIDs.isEmpty else { return }
+        let rows = contactIDs.map { ["meeting_id": meetingID, "contact_id": $0, "user_id": userId] }
+        try await postREST(path: "/rest/v1/meeting_contacts", body: rows, prefer: "return=minimal")
+    }
+
+    // MARK: - Calendar
+
+    /// Fetches the signed-in user's imminent calendar calls (via the CRM's
+    /// Google Calendar connection), each resolved to a company + contacts.
+    func fetchUpcomingMeetings(withinMinutes: Int = 15) async throws -> UpcomingResponse {
+        let data = try await invokeRaw("upcoming-meetings", body: ["within_minutes": withinMinutes])
+        return try JSONDecoder().decode(UpcomingResponse.self, from: data)
+    }
+
+    private func postREST(path: String, body: Any, prefer: String) async throws {
         try await refreshIfNeeded()
         guard let token = session?.accessToken else { throw ClientError.notAuthenticated }
 

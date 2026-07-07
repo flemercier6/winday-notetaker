@@ -55,8 +55,23 @@ struct RecorderPopup: View {
                 Image("WindayLogo")
                     .resizable().renderingMode(.template).scaledToFit()
                     .foregroundStyle(ink).frame(width: 24, height: 24)
-                Text("Start AI Meeting Note")
-                    .font(.system(size: 15, weight: .regular)).foregroundStyle(ink)
+                if let armed = model.armedMeeting {
+                    // Pre-labelled with the scheduled call + its CRM company.
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(armed.title)
+                            .font(.system(size: 14, weight: .medium)).foregroundStyle(ink)
+                            .lineLimit(1)
+                        if let co = armed.companyName, !co.isEmpty {
+                            Text(co)
+                                .font(.system(size: 12, weight: .regular))
+                                .foregroundStyle(.secondary).lineLimit(1)
+                        }
+                    }
+                    .frame(maxWidth: 220, alignment: .leading)
+                } else {
+                    Text("Start AI Meeting Note")
+                        .font(.system(size: 15, weight: .regular)).foregroundStyle(ink)
+                }
             }
             SplitButton(title: "Start Transcribing", accent: accent) {
                 Task { await model.startRecording() }

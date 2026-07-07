@@ -46,7 +46,7 @@ struct PipelineCoordinator {
         // `stopped_at`, `duration_seconds`.
         let iso = ISO8601DateFormatter()
         let stoppedAt = meeting.endedAt ?? Date()
-        try await client.insertMeeting([
+        var payload: [String: Any] = [
             "id": meeting.id.uuidString,
             "user_id": userId,
             "meeting_title": meeting.title,
@@ -55,7 +55,26 @@ struct PipelineCoordinator {
             "started_at": iso.string(from: meeting.startedAt),
             "stopped_at": iso.string(from: stoppedAt),
             "duration_seconds": Int(stoppedAt.timeIntervalSince(meeting.startedAt).rounded()),
-        ])
+        ]
+        // Calendar-armed recordings carry the Meet URL + the company/contacts
+        // resolved from the calendar event (kept in metadata; the functions merge
+        // over it, so it survives transcribe/summarize/export).
+        if let cal = meeting.calendar {
+            if let url = cal.meetURL { payload["meeting_url"] = url }
+            var calMeta: [String: Any] = [
+                "google_event_id": cal.googleEventID,
+                "contact_ids": cal.contactIDs,
+            ]
+            if let cid = cal.companyID { calMeta["company_id"] = cid }
+            if let cname = cal.companyName { calMeta["company_name"] = cname }
+            payload["metadata"] = ["calendar": calMeta]
+        }
+        try await client.insertMeeting(payload)
+
+        // Link the record to the company via its contacts (non-fatal on failure).
+        if let cal = meeting.calendar, !cal.contactIDs.isEmpty {
+            try? await client.linkMeetingContacts(meetingID: meeting.id.uuidString, contactIDs: cal.contactIDs)
+        }
 
         // 2) Transcribe (throws — no transcript yet).
         onStage(.transcribing)
