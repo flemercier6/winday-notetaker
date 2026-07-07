@@ -97,9 +97,10 @@ Deno.serve(async (req) => {
 
     const metadata = { ...(meeting.metadata ?? {}), summary };
 
+    // Keep meeting_title as recorded (the calendar event's name) — the AI
+    // headline lives in metadata.summary.headline for display purposes.
     await admin.from("meetings").update({
       summary: summary.summary ?? "",
-      meeting_title: summary.headline || meeting.meeting_title,
       metadata,
       status: "ready",
       last_error: null,

@@ -91,7 +91,8 @@ function buildPage(databaseId: string, meeting: any, s: any, useDateMention: boo
   const order: Record<string, number> = { high: 0, medium: 1, low: 2 };
   const rt = (t: string) => [{ type: "text", text: { content: String(t).slice(0, 1990) } }];
 
-  const eventTitle = s.headline || meeting.meeting_title || "Meeting";
+  // Notion page title = the event's name (as recorded), never the AI headline.
+  const eventTitle = meeting.meeting_title || "Meeting";
   const started = new Date(meeting.started_at ?? meeting.created_at);
   const dateISO = started.toLocaleDateString("en-CA", { timeZone: TZ });        // YYYY-MM-DD
   const dateLong = started.toLocaleDateString("fr-FR", {
