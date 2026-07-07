@@ -87,20 +87,25 @@ final class MeetDetector: ObservableObject {
         hostBrowserBundleID = nil
     }
 
-    /// True if window `id` still exists AND its title still looks like a Meet
-    /// call. Used during recording to detect the meeting ending (tab/window
-    /// closed or navigated away). Includes off-screen windows so minimizing the
-    /// browser doesn't count as ended.
+    /// True while the tracked browser window `id` still exists. Used during
+    /// recording to detect the meeting ending.
+    ///
+    /// We deliberately check only window *existence*, NOT its title: a browser
+    /// window shows a single title (the active tab's), so switching tabs would
+    /// change the title even though the Meet call is still running in the
+    /// background tab — and the window's audio is still captured. Ending only on
+    /// the window actually closing avoids stopping the recording on a tab switch.
+    /// Includes off-screen windows so minimizing the browser doesn't count as
+    /// ended.
     func isMeetWindow(_ id: CGWindowID) -> Bool {
         guard let windows = CGWindowListCopyWindowInfo(CGWindowListOption(rawValue: 0), kCGNullWindowID)
                 as? [[String: Any]] else {
             return true   // can't tell — assume still active, don't end early
         }
         for window in windows {
-            guard let num = (window[kCGWindowNumber as String] as? NSNumber)?.uint32Value,
-                  num == id else { continue }
-            let title = (window[kCGWindowName as String] as? String) ?? ""
-            return title.localizedCaseInsensitiveContains("meet")
+            if let num = (window[kCGWindowNumber as String] as? NSNumber)?.uint32Value, num == id {
+                return true   // browser window still open (tab switches don't close it)
+            }
         }
         return false   // window no longer exists → closed
     }
