@@ -5,6 +5,10 @@
 // retry with exponential backoff and fall back to alternate Flash models so a
 // transient rate-limit never loses the meeting.
 //
+// Backend: writes to the Winday CRM's existing `meetings` table. The plain
+// `summary` TEXT column gets the human-readable summary; the full structured
+// object (key points, next steps, …) is kept in `metadata.summary` (jsonb).
+//
 // The Gemini API key lives ONLY here, as the `GEMINI_API_KEY` secret.
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
@@ -58,26 +62,24 @@ Deno.serve(async (req) => {
     if (!user) return json({ error: "Unauthorized" }, 401);
 
     const admin = createClient(SUPABASE_URL, SERVICE_KEY);
-    const { meeting_id } = await req.json();
+    const { meeting_id, gemini_model } = await req.json();
+    const primary = gemini_model || "gemini-flash-latest";
 
     const { data: meeting, error: mErr } = await admin
       .from("meetings").select("*").eq("id", meeting_id).eq("user_id", user.id).single();
     if (mErr || !meeting) return json({ error: "Meeting not found" }, 404);
-    if (!meeting.transcript?.utterances) return json({ error: "Meeting has no transcript yet" }, 400);
 
-    const { data: settings } = await admin
-      .from("user_settings").select("gemini_model").eq("user_id", user.id).maybeSingle();
-    const primary = settings?.gemini_model || "gemini-flash-latest";
+    const utterances = meeting.metadata?.transcript?.utterances;
+    if (!utterances?.length) return json({ error: "Meeting has no transcript yet" }, 400);
 
-    const labelled = meeting.transcript.utterances
-      .map((u: any) => `${u.speaker}: ${u.text}`).join("\n");
+    const labelled = utterances.map((u: any) => `${u.speaker}: ${u.text}`).join("\n");
 
     const prompt = `You are an expert sales/meeting assistant for Winday CRM. Analyze the ` +
       `following meeting transcript and produce structured notes. The speaker labelled ` +
       `"You" is the app's user; "Participant 1/2/…" are the other attendees. Be concise ` +
       `and action-oriented. For next_steps, infer the owner when possible (the user vs a ` +
       `participant) and assign a realistic priority. Write in the same language as the ` +
-      `transcript.\n\nMeeting title: ${meeting.title}\n\nTRANSCRIPT:\n${labelled}`;
+      `transcript.\n\nMeeting title: ${meeting.meeting_title}\n\nTRANSCRIPT:\n${labelled}`;
 
     const body = {
       contents: [{ role: "user", parts: [{ text: prompt }] }],
@@ -93,11 +95,14 @@ Deno.serve(async (req) => {
     if (!text) return json({ error: "Gemini returned no content" }, 502);
     const summary = JSON.parse(text);
 
+    const metadata = { ...(meeting.metadata ?? {}), summary };
+
     await admin.from("meetings").update({
-      summary,
-      title: summary.headline || meeting.title,
+      summary: summary.summary ?? "",
+      meeting_title: summary.headline || meeting.meeting_title,
+      metadata,
       status: "ready",
-      error_message: null,
+      last_error: null,
     }).eq("id", meeting_id).eq("user_id", user.id);
 
     return json({ summary });

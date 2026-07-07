@@ -229,7 +229,6 @@ final class AppViewModel: ObservableObject {
     func runPipeline(for meeting: Meeting) async {
         guard client.isAuthenticated else { return }
         failedMeeting = nil
-        await syncSettings()
 
         let pipeline = PipelineCoordinator(client: client, config: config)
         do {
@@ -260,7 +259,6 @@ final class AppViewModel: ObservableObject {
 
         var m = meeting
         m.errorMessage = nil
-        await syncSettings()
         let pipeline = PipelineCoordinator(client: client, config: config)
         do {
             if m.transcript == nil {
@@ -326,23 +324,6 @@ final class AppViewModel: ObservableObject {
     func dismissFailure() {
         failedMeeting = nil
         updatePopups()
-    }
-
-    // MARK: - Settings sync
-
-    func syncSettings() async {
-        guard let userId = client.userId else { return }
-        do {
-            try await client.upsertSettings([
-                "user_id": userId,
-                "notion_database_id": config.notionDatabaseID,
-                "auto_export_notion": config.autoExportToNotion,
-                "deepgram_model": config.deepgramModel,
-                "gemini_model": config.geminiModel,
-            ])
-        } catch {
-            errorMessage = error.localizedDescription
-        }
     }
 
     // MARK: - Helpers

@@ -33,11 +33,13 @@
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Winday Notetaker records your microphone so your side of the meeting is included in the transcript.</string>
 
-	<!-- Supabase backend (publishable values — safe to ship; protected by RLS). -->
+	<!-- Supabase backend (publishable values — safe to ship; protected by RLS).
+	     Points at the Winday CRM's own Supabase project ("WInday App") so the
+	     Notetaker and the CRM share one backend, one account, and one database. -->
 	<key>WNSupabaseURL</key>
-	<string>https://jruoxnwhmgmajbzsjsjw.supabase.co</string>
+	<string>https://gagfovgnuttmngnhqzwd.supabase.co</string>
 	<key>WNSupabaseAnonKey</key>
-	<string>sb_publishable_UfnM18x2iFdmIzOscmSTxQ_q9fHUvrl</string>
+	<string>sb_publishable_pkIHh7RHiAubkwA-De9RMg_g74nhbN_</string>
 
 	<!-- Non-secret model defaults injected from Config.xcconfig. -->
 	<key>WNDeepgramModel</key>

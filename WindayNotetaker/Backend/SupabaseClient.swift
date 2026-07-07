@@ -141,17 +141,11 @@ final class SupabaseClient: ObservableObject {
     // MARK: - Database (PostgREST)
 
     /// Inserts a meeting row so the Edge Functions can read its audio + write back.
+    /// Writes to the Winday CRM's shared `meetings` table (non-secret per-user
+    /// prefs like models / Notion db id are passed to the functions per request,
+    /// so there's no separate settings table).
     func insertMeeting(_ payload: [String: Any]) async throws {
         try await postREST(path: "/rest/v1/meetings", body: payload, prefer: "return=minimal")
-    }
-
-    /// Upserts the caller's non-secret settings (models, Notion db id, …).
-    func upsertSettings(_ payload: [String: Any]) async throws {
-        try await postREST(
-            path: "/rest/v1/user_settings",
-            body: payload,
-            prefer: "resolution=merge-duplicates,return=minimal"
-        )
     }
 
     private func postREST(path: String, body: [String: Any], prefer: String) async throws {

@@ -37,15 +37,20 @@ struct PipelineCoordinator {
         try await client.uploadRecording(fileURL: audioURL, to: audioPath)
         meeting.audioPath = audioPath
 
+        // The row is created in the Winday CRM's `meetings` table (shared
+        // backend). Column names match that schema: `meeting_title`,
+        // `stopped_at`, `duration_seconds`.
         let iso = ISO8601DateFormatter()
+        let stoppedAt = meeting.endedAt ?? Date()
         try await client.insertMeeting([
             "id": meeting.id.uuidString,
             "user_id": userId,
-            "title": meeting.title,
+            "meeting_title": meeting.title,
             "status": "recorded",
             "audio_path": audioPath,
             "started_at": iso.string(from: meeting.startedAt),
-            "ended_at": iso.string(from: meeting.endedAt ?? Date()),
+            "stopped_at": iso.string(from: stoppedAt),
+            "duration_seconds": Int(stoppedAt.timeIntervalSince(meeting.startedAt).rounded()),
         ])
 
         // 2) Transcribe (throws — no transcript yet).
@@ -84,7 +89,10 @@ struct PipelineCoordinator {
         var m = meeting
         m.status = .transcribing
         let tr = try await client.invoke("transcribe",
-                                         body: ["meeting_id": m.id.uuidString],
+                                         body: [
+                                            "meeting_id": m.id.uuidString,
+                                            "deepgram_model": config.deepgramModel,
+                                         ],
                                          as: TranscribeResponse.self)
         m.transcript = tr.transcript
         m.status = .summarizing
@@ -95,7 +103,10 @@ struct PipelineCoordinator {
     func summarizeOnly(_ meeting: Meeting) async throws -> Meeting {
         var m = meeting
         let sr = try await client.invoke("summarize",
-                                         body: ["meeting_id": m.id.uuidString],
+                                         body: [
+                                            "meeting_id": m.id.uuidString,
+                                            "gemini_model": config.geminiModel,
+                                         ],
                                          as: SummarizeResponse.self)
         m.summary = sr.summary
         if m.title.isEmpty || m.title.hasPrefix("Meeting ") {
@@ -110,7 +121,10 @@ struct PipelineCoordinator {
     @discardableResult
     func export(_ meeting: Meeting) async throws -> String {
         let resp = try await client.invoke("export-notion",
-                                           body: ["meeting_id": meeting.id.uuidString],
+                                           body: [
+                                            "meeting_id": meeting.id.uuidString,
+                                            "notion_database_id": config.notionDatabaseID,
+                                           ],
                                            as: ExportResponse.self)
         return resp.url
     }

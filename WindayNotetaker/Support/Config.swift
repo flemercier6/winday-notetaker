@@ -15,7 +15,7 @@ final class Config: ObservableObject {
     let supabaseURL: String
     let supabaseAnonKey: String
 
-    // MARK: Non-secret per-user settings (UserDefaults; mirrored to user_settings)
+    // MARK: Non-secret per-user settings (UserDefaults; passed to Edge Functions per request)
 
     /// Notion database (data source) ID where summaries are created as pages.
     @Published var notionDatabaseID: String {

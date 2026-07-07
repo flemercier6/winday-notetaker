@@ -6,6 +6,11 @@
 // channel independently (channel 0 = "You", channel 1 = the others), plus
 // `diarize=true` so multiple remote participants on channel 1 are split too.
 //
+// Backend: this runs against the Winday CRM's own Supabase project and writes to
+// its existing `meetings` table. That table stores `transcript`/`summary` as
+// human-readable TEXT columns; the structured payload (utterances, language, …)
+// is kept in the `metadata` jsonb column so nothing is lost.
+//
 // The Deepgram API key lives ONLY here, as the `DEEPGRAM_API_KEY` secret.
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
@@ -34,16 +39,13 @@ Deno.serve(async (req) => {
     if (!user) return json({ error: "Unauthorized" }, 401);
 
     const admin = createClient(SUPABASE_URL, SERVICE_KEY);
-    const { meeting_id } = await req.json();
+    const { meeting_id, deepgram_model } = await req.json();
+    const model = deepgram_model || "nova-3";
 
     const { data: meeting, error: mErr } = await admin
       .from("meetings").select("*").eq("id", meeting_id).eq("user_id", user.id).single();
     if (mErr || !meeting) return json({ error: "Meeting not found" }, 404);
     if (!meeting.audio_path) return json({ error: "Meeting has no audio_path" }, 400);
-
-    const { data: settings } = await admin
-      .from("user_settings").select("deepgram_model").eq("user_id", user.id).maybeSingle();
-    const model = settings?.deepgram_model || "nova-3";
 
     const { data: signed, error: sErr } = await admin.storage
       .from("recordings").createSignedUrl(meeting.audio_path, 600);
@@ -83,10 +85,18 @@ Deno.serve(async (req) => {
     const fullText = utterances.map((u: any) => u.text).join(" ");
     const language = dg?.results?.channels?.[0]?.detected_language ?? null;
 
+    // Structured payload the app + CRM UI consume.
     const transcript = { fullText, utterances, language };
+    // Human-readable transcript for the CRM's TEXT column.
+    const labelled = utterances.map((u: any) => `${u.speaker}: ${u.text}`).join("\n");
+
+    const metadata = { ...(meeting.metadata ?? {}), transcript, language };
 
     await admin.from("meetings").update({
-      transcript, language, status: "summarizing", error_message: null,
+      transcript: labelled,
+      metadata,
+      status: "summarizing",
+      last_error: null,
     }).eq("id", meeting_id).eq("user_id", user.id);
 
     return json({ transcript });

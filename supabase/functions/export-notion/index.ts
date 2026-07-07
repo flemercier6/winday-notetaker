@@ -7,6 +7,12 @@
 //          the title.
 // Body   = the AI summary (summary, key points, prioritized next steps).
 //
+// Backend: reads the structured summary from the Winday CRM `meetings` table's
+// `metadata.summary` (jsonb) and records the resulting Notion URL back into
+// `metadata.notion_page_url`. The target database id is supplied per request by
+// the caller (a non-secret user preference), so no server-side settings table is
+// needed.
+//
 // The Notion integration token lives ONLY here, as the `NOTION_TOKEN` secret.
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
@@ -37,28 +43,29 @@ Deno.serve(async (req) => {
     if (!user) return json({ error: "Unauthorized" }, 401);
 
     const admin = createClient(SUPABASE_URL, SERVICE_KEY);
-    const { meeting_id } = await req.json();
+    const { meeting_id, notion_database_id } = await req.json();
+
+    const databaseId = notion_database_id;
+    if (!databaseId) return json({ error: "No Notion database configured in Settings" }, 400);
 
     const { data: meeting, error: mErr } = await admin
       .from("meetings").select("*").eq("id", meeting_id).eq("user_id", user.id).single();
     if (mErr || !meeting) return json({ error: "Meeting not found" }, 404);
-    if (!meeting.summary) return json({ error: "Meeting has no summary to export" }, 400);
 
-    const { data: settings } = await admin
-      .from("user_settings").select("notion_database_id").eq("user_id", user.id).maybeSingle();
-    const databaseId = settings?.notion_database_id;
-    if (!databaseId) return json({ error: "No Notion database configured in Settings" }, 400);
+    const summary = meeting.metadata?.summary;
+    if (!summary) return json({ error: "Meeting has no summary to export" }, 400);
 
     // Try with a date-mention title; if Notion rejects it, retry with plain text.
-    let resp = await postPage(buildPage(databaseId, meeting, true));
+    let resp = await postPage(buildPage(databaseId, meeting, summary, true));
     if (!resp.ok) {
-      resp = await postPage(buildPage(databaseId, meeting, false));
+      resp = await postPage(buildPage(databaseId, meeting, summary, false));
     }
     if (!resp.ok) return json({ error: `Notion ${resp.status}: ${await resp.text()}` }, 502);
 
     const page = await resp.json();
+    const metadata = { ...(meeting.metadata ?? {}), notion_page_url: page.url };
     await admin.from("meetings").update({
-      notion_page_url: page.url, status: "exported",
+      metadata, status: "exported",
     }).eq("id", meeting_id).eq("user_id", user.id);
 
     return json({ url: page.url });
@@ -79,14 +86,13 @@ function postPage(body: unknown) {
   });
 }
 
-function buildPage(databaseId: string, meeting: any, useDateMention: boolean) {
-  const s = meeting.summary;
+function buildPage(databaseId: string, meeting: any, s: any, useDateMention: boolean) {
   const emoji: Record<string, string> = { high: "🔴", medium: "🟡", low: "🟢" };
   const order: Record<string, number> = { high: 0, medium: 1, low: 2 };
   const rt = (t: string) => [{ type: "text", text: { content: String(t).slice(0, 1990) } }];
 
-  const eventTitle = s.headline || meeting.title || "Meeting";
-  const started = new Date(meeting.started_at);
+  const eventTitle = s.headline || meeting.meeting_title || "Meeting";
+  const started = new Date(meeting.started_at ?? meeting.created_at);
   const dateISO = started.toLocaleDateString("en-CA", { timeZone: TZ });        // YYYY-MM-DD
   const dateLong = started.toLocaleDateString("fr-FR", {
     day: "numeric", month: "long", year: "numeric", timeZone: TZ,
