@@ -90,21 +90,31 @@ Deno.serve(async (req) => {
     }
 
     const participants: Participant[] = [];
-    const byKey = new Map<string, Participant>();   // lowercase email or name
-    const add = (p: Participant) => {
-      const key = (p.email ?? p.name).toLowerCase().trim();
-      if (!key) return;
-      const existing = byKey.get(key);
-      if (existing) {
-        existing.invited = existing.invited || p.invited;
-        existing.joined = existing.joined || p.joined;
-        existing.is_self = existing.is_self || p.is_self;
-        if (!existing.email && p.email) existing.email = p.email;
-        if ((existing.name === existing.email || !existing.name) && p.name) existing.name = p.name;
-      } else {
-        byKey.set(key, p);
-        participants.push(p);
+
+    const norm = (s: string) =>
+      s.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").trim();
+    const nameTokens = (s: string) => norm(s).split(/[^a-z0-9]+/).filter((t) => t.length >= 3);
+
+    /// Find who a Meet display name refers to among the invited attendees:
+    /// exact (normalized) name match first, then name-tokens ↔ email-local-part
+    /// matching ("Gabriel Hardy-Françon" ↔ gabriel@…, "Frederic Lemercier" ↔
+    /// lemercier.fred@…). Without this, the same person shows up twice — once
+    /// as their invite email, once as their Meet display name.
+    const findForName = (name: string): Participant | undefined => {
+      const n = norm(name);
+      const exact = participants.find((p) => norm(p.name) === n);
+      if (exact) return exact;
+      const toks = nameTokens(name);
+      let best: Participant | undefined;
+      let bestScore = 0;
+      for (const p of participants) {
+        if (!p.email) continue;
+        const localParts = norm(p.email.split("@")[0]).split(/[^a-z0-9]+/).filter(Boolean);
+        const score = toks.filter((t) =>
+          localParts.some((l) => l === t || l.startsWith(t) || t.startsWith(l))).length;
+        if (score > bestScore) { best = p; bestScore = score; }
       }
+      return bestScore > 0 ? best : undefined;
     };
 
     // 1) Invited attendees, from the calendar event (emails!).
@@ -117,9 +127,16 @@ Deno.serve(async (req) => {
         const event = await evResp.json();
         for (const a of event.attendees ?? []) {
           if (a.resource || !a.email) continue;
-          add({
-            name: a.displayName || a.email,
-            email: String(a.email).toLowerCase(),
+          const email = String(a.email).toLowerCase();
+          const existing = participants.find((p) => p.email === email);
+          if (existing) {
+            existing.invited = true;
+            existing.is_self = existing.is_self || !!a.self;
+            continue;
+          }
+          participants.push({
+            name: a.displayName || email,
+            email,
             invited: true,
             is_self: !!a.self,
           });
@@ -157,7 +174,15 @@ Deno.serve(async (req) => {
               const name = p.signedinUser?.displayName
                 ?? p.anonymousUser?.displayName
                 ?? p.phoneUser?.displayName;
-              if (name) add({ name, joined: true });
+              if (!name) continue;
+              const existing = findForName(name);
+              if (existing) {
+                existing.joined = true;
+                // Upgrade an email-as-name entry to the real display name.
+                if (!existing.name || existing.name === existing.email) existing.name = name;
+              } else {
+                participants.push({ name, joined: true });
+              }
             }
           }
         } else {
