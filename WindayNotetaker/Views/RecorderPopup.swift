@@ -63,9 +63,20 @@ struct RecorderPopup: View {
                             .font(.system(size: 14, weight: .medium)).foregroundStyle(ink)
                             .lineLimit(1)
                         if let co = armed.companyName, !co.isEmpty {
-                            Text(co)
-                                .font(.system(size: 12, weight: .regular))
-                                .foregroundStyle(.secondary).lineLimit(1)
+                            HStack(spacing: 5) {
+                                if let logo = armed.companyLogoURL, let url = URL(string: logo) {
+                                    AsyncImage(url: url) { image in
+                                        image.resizable().scaledToFit()
+                                    } placeholder: {
+                                        Color.clear
+                                    }
+                                    .frame(width: 13, height: 13)
+                                    .clipShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
+                                }
+                                Text(co)
+                                    .font(.system(size: 12, weight: .regular))
+                                    .foregroundStyle(.secondary).lineLimit(1)
+                            }
                         }
                     }
                     .frame(maxWidth: 220, alignment: .leading)

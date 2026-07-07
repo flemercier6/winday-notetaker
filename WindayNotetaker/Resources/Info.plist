@@ -32,6 +32,8 @@
 	<!-- Permission usage strings (required or the app crashes on first request). -->
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Winday Notetaker records your microphone so your side of the meeting is included in the transcript.</string>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Winday Notetaker checks your browser's tabs to detect Google Meet calls and stop the recording when the meeting tab is closed — even if you switch tabs during the call.</string>
 
 	<!-- Supabase backend (publishable values — safe to ship; protected by RLS).
 	     Points at the Winday CRM's own Supabase project ("WInday App") so the

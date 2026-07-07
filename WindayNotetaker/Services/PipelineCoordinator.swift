@@ -67,6 +67,7 @@ struct PipelineCoordinator {
             ]
             if let cid = cal.companyID { calMeta["company_id"] = cid }
             if let cname = cal.companyName { calMeta["company_name"] = cname }
+            if let clogo = cal.companyLogoURL { calMeta["company_logo_url"] = clogo }
             payload["metadata"] = ["calendar": calMeta]
         }
         try await client.insertMeeting(payload)

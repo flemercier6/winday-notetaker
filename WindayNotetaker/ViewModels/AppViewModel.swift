@@ -43,9 +43,12 @@ final class AppViewModel: ObservableObject {
     private var dismissed = false
     /// User opened the recorder from the menu with no meeting in progress.
     private var manuallyShown = false
-    /// Auto-end: watch the meeting window's liveness while recording.
+    /// Auto-end: watch the meeting tab/window's liveness while recording.
     private var endMonitor: Timer?
     private var recordingMeetWindowID: CGWindowID?
+    /// Meeting code + host browser of the recorded call (tab-accurate ending).
+    private var recordingMeetCode: String?
+    private var recordingHostBundleID: String?
     private var meetGoneSince: Date?
     /// Polls the calendar for imminent calls.
     private var upcomingTimer: Timer?
@@ -195,20 +198,28 @@ final class AppViewModel: ObservableObject {
         meetGoneSince = nil
     }
 
-    /// Ends the meeting when the tracked Meet window is gone (or navigated away
-    /// from a Meet tab) for a sustained grace period. Never uses the mic level,
-    /// so muting during the call does not stop the recording.
+    /// Ends the meeting when its TAB is closed (tab-accurate via the browser's
+    /// scripting interface — switching tabs never triggers this), with a
+    /// window-existence fallback for browsers we can't inspect. Never uses the
+    /// mic level, so muting during the call does not stop the recording.
     private func checkMeetEnd() {
         guard isRecording else { stopEndMonitor(); return }
 
-        // If we started without a target (e.g. detected via the mic), adopt a
-        // Meet window if one shows up while recording.
+        // Adopt the meeting identity if it shows up after recording started
+        // (e.g. "Join and Record" opened the tab a few seconds in).
+        if recordingMeetCode == nil, let code = meetDetector.meetCode {
+            recordingMeetCode = code
+            recordingHostBundleID = meetDetector.hostBrowserBundleID
+        }
         if recordingMeetWindowID == nil, let id = meetDetector.meetWindowID {
             recordingMeetWindowID = id
         }
-        guard let id = recordingMeetWindowID else { return }   // no Meet to track → manual stop only
+        // Nothing to track yet → manual stop only.
+        guard recordingMeetCode != nil || recordingMeetWindowID != nil else { return }
 
-        if meetDetector.isMeetWindow(id) {
+        if meetDetector.isMeetStillOpen(code: recordingMeetCode,
+                                        bundleID: recordingHostBundleID,
+                                        fallbackWindowID: recordingMeetWindowID) {
             meetGoneSince = nil
         } else {
             if meetGoneSince == nil { meetGoneSince = Date() }
@@ -236,6 +247,8 @@ final class AppViewModel: ObservableObject {
         do {
             recorder.targetWindowID = meetDetector.meetWindowID
             recordingMeetWindowID = meetDetector.meetWindowID
+            recordingMeetCode = meetDetector.meetCode
+            recordingHostBundleID = meetDetector.hostBrowserBundleID
             try await recorder.start(to: url)
             recordingMeetingID = meeting.id
             recordingStartedAt = Date()
@@ -256,6 +269,9 @@ final class AppViewModel: ObservableObject {
         await recorder.stop()
         recordingMeetingID = nil
         recordingStartedAt = nil
+        recordingMeetCode = nil
+        recordingHostBundleID = nil
+        recordingMeetWindowID = nil
 
         guard var meeting = meetings.first(where: { $0.id == id }) else { return }
         meeting.endedAt = Date()
@@ -271,6 +287,9 @@ final class AppViewModel: ObservableObject {
         await recorder.stop()
         recordingMeetingID = nil
         recordingStartedAt = nil
+        recordingMeetCode = nil
+        recordingHostBundleID = nil
+        recordingMeetWindowID = nil
 
         if let meeting = meetings.first(where: { $0.id == id }),
            let url = meeting.audioFileURL {

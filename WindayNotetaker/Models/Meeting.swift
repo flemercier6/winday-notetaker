@@ -60,6 +60,7 @@ struct CalendarContext: Codable, Equatable {
     var meetURL: String?
     var companyID: String?
     var companyName: String?
+    var companyLogoURL: String?
     var contactIDs: [String]
 }
 
@@ -72,6 +73,7 @@ struct UpcomingMeeting: Codable, Equatable, Identifiable {
     let meetURL: String?
     let companyID: String?
     let companyName: String?
+    let companyLogoURL: String?
     let contactIDs: [String]
 
     var id: String { googleEventID }
@@ -84,6 +86,7 @@ struct UpcomingMeeting: Codable, Equatable, Identifiable {
         case meetURL = "meet_url"
         case companyID = "company_id"
         case companyName = "company_name"
+        case companyLogoURL = "company_logo_url"
         case contactIDs = "contact_ids"
     }
 
@@ -98,7 +101,8 @@ struct UpcomingMeeting: Codable, Equatable, Identifiable {
 
     func context() -> CalendarContext {
         CalendarContext(googleEventID: googleEventID, meetURL: meetURL,
-                        companyID: companyID, companyName: companyName, contactIDs: contactIDs)
+                        companyID: companyID, companyName: companyName,
+                        companyLogoURL: companyLogoURL, contactIDs: contactIDs)
     }
 }
 
