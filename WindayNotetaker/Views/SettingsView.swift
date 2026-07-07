@@ -14,9 +14,10 @@ enum WindayTheme {
     static let textSecondary = Color(red: 0x88 / 255, green: 0x88 / 255, blue: 0x88 / 255)
     static let border = Color(red: 0xE0 / 255, green: 0xE0 / 255, blue: 0xE0 / 255)
     static let cardBackground = Color.white
+    /// The recording popups' card color (#F9F8F7).
+    static let popupBackground = Color(red: 0.976, green: 0.973, blue: 0.969)
     static let chipBackground = Color(red: 0xE6 / 255, green: 0xE6 / 255, blue: 0xE6 / 255)
     static let accent = Color(red: 0.0, green: 0.47, blue: 1.0)          // #0077FF
-    static let containerTint = Color(red: 0xF9 / 255, green: 0xF8 / 255, blue: 0xF7 / 255).opacity(0.3)
 
     /// Inter when installed (the CRM's font), otherwise the system font at the
     /// same size/weight — SF is metrically the closest fallback.
@@ -28,16 +29,26 @@ enum WindayTheme {
     }
 }
 
-/// Real behind-window blur (the "backdrop-blur" of the CRM popovers).
-private struct VisualEffectBackground: NSViewRepresentable {
-    func makeNSView(context: Context) -> NSVisualEffectView {
-        let view = NSVisualEffectView()
-        view.material = .popover
-        view.blendingMode = .behindWindow
-        view.state = .active
+/// Strips the Settings window's chrome (no title bar) and makes it transparent
+/// so only the rounded popup shape shows — same silhouette as the floating
+/// recording popups.
+private struct WindowChromeRemover: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        DispatchQueue.main.async { [weak view] in
+            guard let window = view?.window else { return }
+            window.titleVisibility = .hidden
+            window.titlebarAppearsTransparent = true
+            window.styleMask.insert(.fullSizeContentView)
+            window.standardWindowButton(.miniaturizeButton)?.isHidden = true
+            window.standardWindowButton(.zoomButton)?.isHidden = true
+            window.isOpaque = false
+            window.backgroundColor = .clear
+            window.isMovableByWindowBackground = true
+        }
         return view
     }
-    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {}
+    func updateNSView(_ nsView: NSView, context: Context) {}
 }
 
 // MARK: - Settings window
@@ -60,35 +71,35 @@ struct SettingsView: View {
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
 
     var body: some View {
-        ZStack {
-            VisualEffectBackground().ignoresSafeArea()
-            WindayTheme.containerTint.ignoresSafeArea()
+        // Same container recipe as the recording popups: #F9F8F7 card with a
+        // #E0E0E0 border, a 4pt ultra-thin-material halo, and 8pt of outer
+        // padding — on a chromeless, transparent window.
+        VStack(alignment: .leading, spacing: 12) {
+            tabBar
 
-            VStack(alignment: .leading, spacing: 12) {
-                tabBar
-
-                // White card, like the CRM popover body.
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 0) {
-                        switch tab {
-                        case .account: accountContent
-                        case .summary: summaryContent
-                        case .notion: notionContent
-                        case .models: modelsContent
-                        }
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    switch tab {
+                    case .account: accountContent
+                    case .summary: summaryContent
+                    case .notion: notionContent
+                    case .models: modelsContent
                     }
-                    .padding(18)
-                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .background(WindayTheme.cardBackground)
-                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .strokeBorder(WindayTheme.border))
-                .shadow(color: .black.opacity(0.15), radius: 10, x: 0, y: 4)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.vertical, 2)
             }
-            .padding(16)
         }
-        .frame(width: 560, height: 480)
+        .padding(16)
+        .frame(width: 520, height: 440)
+        .background(WindayTheme.popupBackground,
+                    in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
+            .strokeBorder(WindayTheme.border))
+        .padding(4)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .padding(8)
+        .background(WindowChromeRemover())
     }
 
     // MARK: Tab bar — CRM-style chips (selected: #E6E6E6 fill; others: dashed)

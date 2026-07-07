@@ -13,6 +13,9 @@ struct WindayNotetakerApp: App {
             // versions, so we resize the NSImage itself (18pt, template).
             Image(nsImage: menuBarIcon())
         }
+        // Custom CRM-styled panel instead of a native NSMenu (which can't be
+        // themed): rows, hover states and status tags are SwiftUI views.
+        .menuBarExtraStyle(.window)
 
         Settings {
             SettingsView()
