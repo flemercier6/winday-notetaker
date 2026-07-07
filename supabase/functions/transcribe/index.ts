@@ -75,12 +75,33 @@ Deno.serve(async (req) => {
     // (diarized into Participant 1, 2, …).
     const raw = (dg?.results?.utterances ?? []).slice().sort(
       (a: any, b: any) => (a.start ?? 0) - (b.start ?? 0));
-    const utterances = raw.map((u: any) => ({
+    const mapped = raw.map((u: any) => ({
       speaker: (u.channel ?? 0) === 0 ? "You" : `Participant ${(u.speaker ?? 0) + 1}`,
       text: u.transcript ?? "",
       start: u.start ?? 0,
       end: u.end ?? 0,
     })).filter((u: any) => u.text.trim().length > 0);
+
+    // Echo suppression: when the call plays through speakers, the mic picks the
+    // remote voices back up, so participants' words also appear (garbled) on
+    // the "You" channel. Drop "You" utterances whose words are near-duplicates
+    // (≥70% token overlap) of a time-overlapping participant utterance.
+    const tokens = (s: string) => s.toLowerCase()
+      .normalize("NFD").replace(/[̀-ͯ]/g, "")
+      .replace(/[^a-z0-9\s]/g, " ").split(/\s+/).filter(Boolean);
+    const participantUtts = mapped.filter((u: any) => u.speaker !== "You");
+    const isEcho = (you: any) => {
+      const yt = tokens(you.text);
+      if (yt.length === 0) return false;
+      for (const p of participantUtts) {
+        if (p.end < you.start - 2 || p.start > you.end + 2) continue;   // ±2s window
+        const pt = new Set(tokens(p.text));
+        const overlap = yt.filter((w: string) => pt.has(w)).length / yt.length;
+        if (overlap >= 0.7) return true;
+      }
+      return false;
+    };
+    const utterances = mapped.filter((u: any) => u.speaker !== "You" || !isEcho(u));
 
     const fullText = utterances.map((u: any) => u.text).join(" ");
     const language = dg?.results?.channels?.[0]?.detected_language ?? null;
