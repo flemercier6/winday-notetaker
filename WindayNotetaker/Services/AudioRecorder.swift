@@ -116,17 +116,20 @@ final class AudioRecorder: NSObject, ObservableObject {
     private func startSystemAudioCapture() async throws {
         let content = try await SCShareableContent.excludingDesktopWindows(false,
                                                                            onScreenWindowsOnly: false)
+        guard let display = content.displays.first else { throw RecorderError.noDisplay }
 
-        // Prefer capturing just the meeting window's app audio; fall back to the
-        // whole display if we don't have a specific target.
+        // Capture the whole *browser application's* audio (all its tabs/windows),
+        // not a single window. Window-scoped capture (`desktopIndependentWindow`)
+        // stops the moment the Meet tab is switched away from — which killed the
+        // whole recording on a tab switch. App-scoped capture keeps recording
+        // across tab/window switches while still excluding other apps' audio.
         let filter: SCContentFilter
         if let targetWindowID,
-           let window = content.windows.first(where: { $0.windowID == targetWindowID }) {
-            filter = SCContentFilter(desktopIndependentWindow: window)
-        } else if let display = content.displays.first {
-            filter = SCContentFilter(display: display, excludingApplications: [], exceptingWindows: [])
+           let window = content.windows.first(where: { $0.windowID == targetWindowID }),
+           let app = window.owningApplication {
+            filter = SCContentFilter(display: display, including: [app], exceptingWindows: [])
         } else {
-            throw RecorderError.noDisplay
+            filter = SCContentFilter(display: display, excludingApplications: [], exceptingWindows: [])
         }
 
         let config = SCStreamConfiguration()
