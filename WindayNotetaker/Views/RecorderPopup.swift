@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 /// Top-center floating pill (Figma-styled). States: sign in → ready (Start) →
 /// recording (audio visualizer + "–" to hide). Progress/done/failure live in the
@@ -73,7 +74,12 @@ struct RecorderPopup: View {
                         .font(.system(size: 15, weight: .regular)).foregroundStyle(ink)
                 }
             }
-            SplitButton(title: "Start Transcribing", accent: accent) {
+            SplitButton(title: model.armedMeeting?.meetURL != nil ? "Join and Record" : "Start Transcribing",
+                        accent: accent) {
+                // Armed from a calendar call → open the Meet link, then record.
+                if let s = model.armedMeeting?.meetURL, let url = URL(string: s) {
+                    NSWorkspace.shared.open(url)
+                }
                 Task { await model.startRecording() }
             } menu: {
                 Button("Hide") { model.hidePopup() }

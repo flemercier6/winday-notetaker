@@ -103,17 +103,6 @@ final class AppViewModel: ObservableObject {
         // Surface the correct popup immediately on launch (e.g. sign-in).
         updatePopups()
 
-        // Recovery: if a previous run left a meeting failed with its audio still
-        // on disk, surface it so the user can Retry (e.g. after updating the app).
-        // The transcript/summary regenerate from the saved recording — nothing is
-        // re-recorded.
-        if let failed = meetings.first(where: { m in
-            guard m.status == .failed, let url = m.audioFileURL else { return false }
-            return FileManager.default.fileExists(atPath: url.path)
-        }) {
-            presentFailure(failed)
-        }
-
         // Poll the calendar so the recorder can arm ~1 min before a scheduled
         // call. 30s granularity is enough for a 1-minute lead time.
         upcomingTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
@@ -357,6 +346,29 @@ final class AppViewModel: ObservableObject {
         }
     }
 
+    /// Explicitly export an already-summarized meeting to Notion (independent of
+    /// the auto-export preference), from the menu's "Send to Notion" action.
+    func exportMeetingToNotion(_ meeting: Meeting) async {
+        guard client.isAuthenticated, config.isNotionConfigured, meeting.summary != nil else { return }
+        var m = meeting
+        m.errorMessage = nil
+        activeStatus = PipelineCoordinator.Stage.exporting.rawValue
+        let pipeline = PipelineCoordinator(client: client, config: config)
+        do {
+            m.notionPageURL = try await pipeline.export(m)
+            m.status = .exported
+            update(m)
+            activeStatus = nil
+            finish(m)
+        } catch {
+            m.status = .ready
+            m.errorMessage = "Notion export failed: \(error.localizedDescription)"
+            update(m)
+            activeStatus = nil
+            presentFailure(m)
+        }
+    }
+
     // MARK: - Progress result
 
     private func finish(_ meeting: Meeting) {
@@ -393,6 +405,17 @@ final class AppViewModel: ObservableObject {
 
     func dismissFailure() {
         failedMeeting = nil
+        updatePopups()
+    }
+
+    /// Permanently discard a meeting: delete its local recording and drop it from
+    /// history, so it is NOT re-surfaced for retry on the next launch. Used by the
+    /// "Discard" action on the failure popup (e.g. throwaway test calls).
+    func discardMeeting(_ meeting: Meeting) {
+        if let url = meeting.audioFileURL { try? FileManager.default.removeItem(at: url) }
+        meetings.removeAll { $0.id == meeting.id }
+        persist()
+        if failedMeeting?.id == meeting.id { failedMeeting = nil }
         updatePopups()
     }
 
