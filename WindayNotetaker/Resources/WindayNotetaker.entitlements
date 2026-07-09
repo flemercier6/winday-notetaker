@@ -18,6 +18,12 @@
 	<key>com.apple.security.device.audio-input</key>
 	<true/>
 
+	<!-- Apple Events (Automation): required under the Hardened Runtime to read
+	     the browser's tabs — Meet detection and auto-stop when the meeting tab
+	     closes. Without this, a notarized build is silently denied. -->
+	<key>com.apple.security.automation.apple-events</key>
+	<true/>
+
 	<!-- Outbound HTTPS to Deepgram / Gemini / Notion. -->
 	<key>com.apple.security.network.client</key>
 	<true/>
