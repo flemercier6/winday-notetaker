@@ -153,16 +153,23 @@ final class SupabaseClient: ObservableObject {
     /// Writes to the Winday CRM's shared `meetings` table (non-secret per-user
     /// prefs like models / Notion db id are passed to the functions per request,
     /// so there's no separate settings table).
+    /// Idempotent: retrying a meeting whose row already exists is a no-op (the
+    /// existing row — with its transcript/summary — is kept untouched).
     func insertMeeting(_ payload: [String: Any]) async throws {
-        try await postREST(path: "/rest/v1/meetings", body: payload, prefer: "return=minimal")
+        try await postREST(path: "/rest/v1/meetings?on_conflict=id",
+                           body: payload,
+                           prefer: "resolution=ignore-duplicates,return=minimal")
     }
 
     /// Links a meeting to CRM contacts (which carry the company), so the record
     /// shows up under the right company. `workspace_id` is nullable, so we omit it.
+    /// Idempotent: re-linking the same contact on retry is a no-op.
     func linkMeetingContacts(meetingID: String, contactIDs: [String]) async throws {
         guard let userId, !contactIDs.isEmpty else { return }
         let rows = contactIDs.map { ["meeting_id": meetingID, "contact_id": $0, "user_id": userId] }
-        try await postREST(path: "/rest/v1/meeting_contacts", body: rows, prefer: "return=minimal")
+        try await postREST(path: "/rest/v1/meeting_contacts?on_conflict=meeting_id,contact_id",
+                           body: rows,
+                           prefer: "resolution=ignore-duplicates,return=minimal")
     }
 
     // MARK: - Calendar
