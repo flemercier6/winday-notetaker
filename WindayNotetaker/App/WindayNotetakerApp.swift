@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import ServiceManagement
 
 @main
 struct WindayNotetakerApp: App {
@@ -33,7 +34,12 @@ struct WindayNotetakerApp: App {
 @MainActor
 func menuBarIcon() -> NSImage {
     guard let base = NSImage(named: "WindayLogo"), let img = base.copy() as? NSImage else {
-        return NSImage()
+        // Never render an empty (invisible) status item: fall back to a system
+        // symbol if the asset can't be loaded for any reason.
+        let fallback = NSImage(systemSymbolName: "waveform.circle.fill",
+                               accessibilityDescription: "Winday Notetaker") ?? NSImage()
+        fallback.isTemplate = true
+        return fallback
     }
     let height: CGFloat = 18
     let width = img.size.height > 0 ? height * (img.size.width / img.size.height) : height
@@ -46,7 +52,20 @@ func menuBarIcon() -> NSImage {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        registerLaunchAtLoginOnce()
         AppViewModel.shared.beginAgent()
+    }
+
+    /// A menu-bar agent is useless when it isn't running, so opt into launch
+    /// at login on first run. Done exactly once — if the user turns the toggle
+    /// off in Settings afterwards, we never force it back on.
+    private func registerLaunchAtLoginOnce() {
+        let key = "wn_didAutoRegisterLoginItem"
+        guard !UserDefaults.standard.bool(forKey: key) else { return }
+        UserDefaults.standard.set(true, forKey: key)
+        if SMAppService.mainApp.status == .notRegistered {
+            try? SMAppService.mainApp.register()
+        }
     }
 
     /// Escape hatch when the menu-bar icon is hidden (crowded menu bar / notch):
