@@ -9,7 +9,7 @@
 // Default model identifiers (overridable in Settings UI; also stored per-user
 // server-side in user_settings). These are NON-secret.
 DEEPGRAM_MODEL = nova-3
-GEMINI_MODEL = gemini-flash-latest
+GEMINI_MODEL = gemini-2.5-flash
 
 // NOTE: the Supabase URL + publishable key live in Info.plist instead — an
 // xcconfig value treats "//" (as in https://) as the start of a comment.

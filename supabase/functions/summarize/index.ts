@@ -77,7 +77,11 @@ Deno.serve(async (req) => {
 
     const admin = createClient(SUPABASE_URL, SERVICE_KEY);
     const { meeting_id, gemini_model, custom_prompt, summary_length } = await req.json();
-    const primary = gemini_model || "gemini-flash-latest";
+    // Default to the PINNED model: the "-latest" alias pool saturates (503
+    // "high demand") on the free tier while the pinned pool keeps serving.
+    const primary = (gemini_model && gemini_model !== "gemini-flash-latest")
+      ? gemini_model
+      : "gemini-2.5-flash";
 
     // Persist failures on the meeting row so the CRM (and debugging) can see
     // WHY a summary failed, not just that it did.
@@ -217,12 +221,16 @@ function extractJSON(text: string): string {
 /// Calls Gemini with backoff on 429/500/503, then falls back to alternate Flash
 /// models. Total worst-case wait ~10s, safely under the function time limit.
 async function generateWithRetry(primary: string, body: unknown): Promise<any> {
-  const fallbacks = ["gemini-2.5-flash", "gemini-2.0-flash"].filter((m) => m !== primary);
+  // gemini-2.0-flash is intentionally NOT a fallback: its free-tier quota is 0
+  // (guaranteed 429). flash-lite runs on separate capacity and often survives
+  // "high demand" windows that take down 2.5-flash.
+  const fallbacks = ["gemini-2.5-flash", "gemini-2.5-flash-lite"].filter((m) => m !== primary);
   const plan: Array<{ model: string; delay: number }> = [
     { model: primary, delay: 0 },
-    { model: primary, delay: 2500 },
-    { model: primary, delay: 6000 },
-    ...fallbacks.map((m) => ({ model: m, delay: 1500 })),
+    ...fallbacks.map((m) => ({ model: m, delay: 1000 })),
+    { model: primary, delay: 8000 },
+    ...fallbacks.map((m) => ({ model: m, delay: 4000 })),
+    { model: primary, delay: 15000 },
   ];
 
   let lastErr = "unknown error";

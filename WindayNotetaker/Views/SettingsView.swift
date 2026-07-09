@@ -271,14 +271,14 @@ struct SettingsView: View {
 
             sectionDivider
             row("Gemini") {
-                TextField("gemini-flash-latest", text: $config.geminiModel)
+                TextField("gemini-2.5-flash", text: $config.geminiModel)
                     .textFieldStyle(.plain)
                     .font(WindayTheme.font(13))
                     .foregroundStyle(WindayTheme.textPrimary)
                     .multilineTextAlignment(.trailing)
                     .frame(maxWidth: 220)
             }
-            caption("Default: gemini-flash-latest (always points at the newest Flash).")
+            caption("Default: gemini-2.5-flash (the pinned Flash model — most reliable).")
         }
     }
 

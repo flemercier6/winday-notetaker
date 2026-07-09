@@ -62,7 +62,7 @@ final class Config: ObservableObject {
         deepgramModel = defaults.string(forKey: "deepgram_model")
             ?? (plist["WNDeepgramModel"] as? String) ?? "nova-3"
         geminiModel = defaults.string(forKey: "gemini_model")
-            ?? (plist["WNGeminiModel"] as? String) ?? "gemini-flash-latest"
+            ?? (plist["WNGeminiModel"] as? String) ?? "gemini-2.5-flash"
         // Default ON: once a Notion database is configured, summaries are sent
         // automatically. Users can turn it off in Settings → Notion.
         autoExportToNotion = defaults.object(forKey: "auto_export_notion") as? Bool ?? true
