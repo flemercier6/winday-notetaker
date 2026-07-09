@@ -25,9 +25,10 @@
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.productivity</string>
 
-	<!-- Menu-bar agent: no Dock icon, no main window. -->
+	<!-- Regular app: Dock icon + dashboard window listing the recorded calls.
+	     (Was a menu-bar-only agent; the menu-bar icon is kept as a companion.) -->
 	<key>LSUIElement</key>
-	<true/>
+	<false/>
 
 	<!-- Permission usage strings (required or the app crashes on first request). -->
 	<key>NSMicrophoneUsageDescription</key>

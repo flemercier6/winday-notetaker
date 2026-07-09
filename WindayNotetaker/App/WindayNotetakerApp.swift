@@ -7,6 +7,17 @@ struct WindayNotetakerApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     var body: some Scene {
+        // Main dashboard: a regular window (with a Dock icon) listing the
+        // recorded calls. The floating recorder popups still appear on top
+        // during meetings; the menu-bar icon remains for quick access.
+        Window("Winday Notetaker", id: "dashboard") {
+            DashboardView()
+                .environmentObject(Config.shared)
+                .environmentObject(SupabaseClient.shared)
+                .environmentObject(AppViewModel.shared)
+        }
+        .defaultSize(width: 680, height: 520)
+
         MenuBarExtra {
             MenuBarContent()
         } label: {
@@ -27,8 +38,6 @@ struct WindayNotetakerApp: App {
     }
 }
 
-/// Runs the app as a background agent: no Dock icon (LSUIElement), no main
-/// window. The floating recorder popup + menu bar are the whole UI.
 /// A copy of the Winday logo resized to the menu-bar height (~18pt), rendered
 /// as a template so macOS tints it for light/dark menu bars.
 @MainActor
@@ -51,14 +60,13 @@ func menuBarIcon() -> NSImage {
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
-        NSApp.setActivationPolicy(.accessory)
         registerLaunchAtLoginOnce()
         AppViewModel.shared.beginAgent()
     }
 
-    /// A menu-bar agent is useless when it isn't running, so opt into launch
-    /// at login on first run. Done exactly once — if the user turns the toggle
-    /// off in Settings afterwards, we never force it back on.
+    /// The recorder should always be running so calls are never missed, so opt
+    /// into launch at login on first run. Done exactly once — if the user turns
+    /// the toggle off in Settings afterwards, we never force it back on.
     private func registerLaunchAtLoginOnce() {
         let key = "wn_didAutoRegisterLoginItem"
         guard !UserDefaults.standard.bool(forKey: key) else { return }
@@ -68,11 +76,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Escape hatch when the menu-bar icon is hidden (crowded menu bar / notch):
-    /// launching the app again (Spotlight, Finder, Dock) lands here on the
-    /// running instance and surfaces the recorder popup.
+    /// Clicking the Dock icon (or relaunching) with no visible window reopens
+    /// the dashboard — AppKit handles it when we return true.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
-        AppViewModel.shared.showPopup()
         return true
+    }
+
+    /// Closing the dashboard window must not quit the app: the agent keeps
+    /// watching the calendar/browser and recording meetings in the background.
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        return false
     }
 }
