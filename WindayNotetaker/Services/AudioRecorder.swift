@@ -53,6 +53,8 @@ final class AudioRecorder: NSObject, ObservableObject {
     private var stream: SCStream?
     private var engine: AVAudioEngine?
     private var mixer: FileMixer?
+    private var configChangeObserver: NSObjectProtocol?
+    private var watchdog: Timer?
 
     /// Canonical mixing format: 48 kHz stereo float. `nonisolated` so the
     /// SCStream callback (a background queue) can read it.
@@ -87,6 +89,12 @@ final class AudioRecorder: NSObject, ObservableObject {
         level = 0
         levels = Array(repeating: 0, count: Self.barCount)
 
+        watchdog?.invalidate()
+        watchdog = nil
+        if let configChangeObserver {
+            NotificationCenter.default.removeObserver(configChangeObserver)
+            self.configChangeObserver = nil
+        }
         engine?.inputNode.removeTap(onBus: 0)
         engine?.stop()
         engine = nil
@@ -202,6 +210,47 @@ final class AudioRecorder: NSObject, ObservableObject {
         } catch {
             throw RecorderError.engineFailed(error.localizedDescription)
         }
+
+        // The input device can change mid-meeting (AirPods/headset connecting,
+        // Meet switching devices). That stops AVAudioEngine's input silently —
+        // the mic tap is the file's master clock, so the recording would freeze
+        // while the UI still says "recording". Restart the engine whenever the
+        // configuration changes, and back it with a watchdog in case the engine
+        // dies without posting the notification.
+        configChangeObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange, object: engine, queue: nil
+        ) { [weak self] _ in
+            Task { @MainActor in self?.recoverEngineIfNeeded(reason: "configuration change") }
+        }
+        watchdog?.invalidate()
+        watchdog = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, self.isRecording, !self.isStopping else { return }
+                let stalled = (self.mixer?.secondsSinceLastWrite ?? 0) > 10
+                if self.engine?.isRunning != true || stalled {
+                    self.recoverEngineIfNeeded(reason: stalled ? "stalled input" : "engine stopped")
+                }
+            }
+        }
+    }
+
+    /// Re-attaches the mic tap and restarts the engine after the input device
+    /// or its format changed. The mixer keeps writing to the SAME file; it
+    /// rebuilds its sample-rate converter on the fly if the format differs.
+    private func recoverEngineIfNeeded(reason: String) {
+        guard isRecording, !isStopping, let engine, let mixer else { return }
+
+        engine.inputNode.removeTap(onBus: 0)
+        let input = engine.inputNode
+        let micFormat = input.outputFormat(forBus: 0)
+        guard micFormat.sampleRate > 0, micFormat.channelCount > 0 else { return }
+
+        input.installTap(onBus: 0, bufferSize: 4096, format: micFormat) { buffer, _ in
+            mixer.writeMic(buffer)
+        }
+        engine.prepare()
+        try? engine.start()
+        NSLog("AudioRecorder: recovered audio engine after \(reason) (running: \(engine.isRunning))")
     }
 }
 
@@ -239,16 +288,26 @@ private final class FileMixer: @unchecked Sendable {
     private let file: AVAudioFile
     private let stereoFormat: AVAudioFormat
     private let monoFormat: AVAudioFormat
-    private let micToMono: AVAudioConverter?
+    private var micToMono: AVAudioConverter?
+    private var micFormat: AVAudioFormat
     private let fifo: SampleFIFO
     private let lock = NSLock()
     private var closed = false
+    private var lastWrite = Date()
+
+    /// How long ago the last buffer hit the file — the recorder's watchdog uses
+    /// this to detect a silently-dead input.
+    var secondsSinceLastWrite: TimeInterval {
+        lock.lock(); defer { lock.unlock() }
+        return Date().timeIntervalSince(lastWrite)
+    }
 
     init(url: URL, micFormat: AVAudioFormat, mixFormat: AVAudioFormat, fifo: SampleFIFO) throws {
         self.fifo = fifo
         self.stereoFormat = mixFormat
         let mono = AVAudioFormat(standardFormatWithSampleRate: mixFormat.sampleRate, channels: 1)!
         self.monoFormat = mono
+        self.micFormat = micFormat
         self.micToMono = micFormat == mono ? nil : AVAudioConverter(from: micFormat, to: mono)
 
         // Stereo 16-bit WAV: left = your mic, right = the meeting audio.
@@ -269,6 +328,14 @@ private final class FileMixer: @unchecked Sendable {
     }
 
     func writeMic(_ micBuffer: AVAudioPCMBuffer) {
+        // A device switch changes the tap's format (sample rate/channels).
+        // Rebuild the converter so recording continues into the same file.
+        // Only the tap thread calls this, so no extra locking is needed.
+        if micBuffer.format != micFormat {
+            micFormat = micBuffer.format
+            micToMono = micFormat == monoFormat ? nil : AVAudioConverter(from: micFormat, to: monoFormat)
+        }
+
         // 1) Mic → 48 kHz mono.
         let mono: AVAudioPCMBuffer
         if let micToMono {
@@ -316,7 +383,10 @@ private final class FileMixer: @unchecked Sendable {
         // 4) Write one buffer to disk.
         lock.lock()
         let isClosed = closed
-        if !isClosed { try? file.write(from: stereo) }
+        if !isClosed {
+            try? file.write(from: stereo)
+            lastWrite = Date()
+        }
         lock.unlock()
 
         if !isClosed { onLevel?(peak) }

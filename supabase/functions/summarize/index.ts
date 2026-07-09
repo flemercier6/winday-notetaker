@@ -64,6 +64,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
 
+  let persistFail: ((msg: string) => Promise<void>) | null = null;
   try {
     if (!GEMINI_API_KEY) return json({ error: "GEMINI_API_KEY secret is not set." }, 500);
 
@@ -78,12 +79,24 @@ Deno.serve(async (req) => {
     const { meeting_id, gemini_model, custom_prompt, summary_length } = await req.json();
     const primary = gemini_model || "gemini-flash-latest";
 
+    // Persist failures on the meeting row so the CRM (and debugging) can see
+    // WHY a summary failed, not just that it did.
+    const failMeeting = async (msg: string) => {
+      await admin.from("meetings").update({ last_error: msg })
+        .eq("id", meeting_id).eq("user_id", user.id);
+    };
+    persistFail = failMeeting;
+
     const { data: meeting, error: mErr } = await admin
       .from("meetings").select("*").eq("id", meeting_id).eq("user_id", user.id).single();
     if (mErr || !meeting) return json({ error: "Meeting not found" }, 404);
 
     const utterances = meeting.metadata?.transcript?.utterances;
-    if (!utterances?.length) return json({ error: "Meeting has no transcript yet" }, 400);
+    if (!utterances?.length) {
+      const msg = "Meeting has no transcript yet";
+      await failMeeting(msg);
+      return json({ error: msg }, 400);
+    }
 
     const labelled = utterances.map((u: any) => `${u.speaker}: ${u.text}`).join("\n");
 
@@ -131,13 +144,29 @@ Deno.serve(async (req) => {
         temperature: 0.3,
         responseMimeType: "application/json",
         responseSchema,
+        // Explicit ceiling: leaves ample room for a long summary while making
+        // MAX_TOKENS truncation detectable instead of producing broken JSON.
+        maxOutputTokens: 65536,
       },
     };
 
     const data = await generateWithRetry(primary, body);
-    const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-    if (!text) return json({ error: "Gemini returned no content" }, 502);
-    const summary = JSON.parse(text);
+    const candidate = data?.candidates?.[0];
+    const text = candidate?.content?.parts?.map((p: any) => p?.text ?? "").join("") || null;
+    if (!text) {
+      const reason = candidate?.finishReason ?? data?.promptFeedback?.blockReason ?? "no candidates";
+      const msg = `Gemini returned no content (${reason})`;
+      await failMeeting(msg);
+      return json({ error: msg }, 502);
+    }
+    let summary: any;
+    try {
+      summary = JSON.parse(extractJSON(text));
+    } catch {
+      const msg = `Gemini returned invalid JSON (finishReason: ${candidate?.finishReason ?? "?"})`;
+      await failMeeting(msg);
+      return json({ error: msg }, 502);
+    }
 
     // Apply confident speaker identifications to the transcript: relabel the
     // diarized "Participant N" utterances with the identified names.
@@ -170,9 +199,20 @@ Deno.serve(async (req) => {
 
     return json({ summary });
   } catch (e) {
-    return json({ error: String(e) }, 502);
+    const msg = String(e);
+    try { await persistFail?.(msg); } catch { /* best effort */ }
+    return json({ error: msg }, 502);
   }
 });
+
+/// Gemini occasionally wraps its JSON in markdown fences or leading prose even
+/// in JSON mode; extract the outermost object so parsing survives it.
+function extractJSON(text: string): string {
+  const trimmed = text.trim().replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/, "");
+  const start = trimmed.indexOf("{");
+  const end = trimmed.lastIndexOf("}");
+  return start >= 0 && end > start ? trimmed.slice(start, end + 1) : trimmed;
+}
 
 /// Calls Gemini with backoff on 429/500/503, then falls back to alternate Flash
 /// models. Total worst-case wait ~10s, safely under the function time limit.
@@ -186,7 +226,11 @@ async function generateWithRetry(primary: string, body: unknown): Promise<any> {
   ];
 
   let lastErr = "unknown error";
+  const startedAt = Date.now();
   for (const step of plan) {
+    // Long transcripts make each Gemini call slow; stop launching new attempts
+    // when there's no time left before the edge-function wall clock kills us.
+    if (Date.now() - startedAt > 90_000 && lastErr !== "unknown error") break;
     if (step.delay) await sleep(step.delay);
     const resp = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/${step.model}:generateContent`,

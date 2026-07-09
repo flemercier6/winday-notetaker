@@ -103,6 +103,16 @@ Deno.serve(async (req) => {
     };
     const utterances = mapped.filter((u: any) => u.speaker !== "You" || !isEcho(u));
 
+    // An empty transcription means the audio itself is silent/broken (e.g. the
+    // recording died mid-meeting). Surface that as a hard failure instead of
+    // letting summarize fail downstream with a confusing "no transcript" error.
+    if (utterances.length === 0) {
+      const msg = "No speech was detected in the recording — the audio file appears to be empty or corrupted.";
+      await admin.from("meetings").update({ status: "failed", last_error: msg })
+        .eq("id", meeting_id).eq("user_id", user.id);
+      return json({ error: msg }, 422);
+    }
+
     const fullText = utterances.map((u: any) => u.text).join(" ");
     const language = dg?.results?.channels?.[0]?.detected_language ?? null;
 
