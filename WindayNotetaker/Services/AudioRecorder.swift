@@ -168,25 +168,12 @@ final class AudioRecorder: NSObject, ObservableObject {
 
         let input = engine.inputNode
 
-        // Acoustic echo cancellation: without it, the call audio played through
-        // the speakers re-enters the microphone, and the remote participants'
-        // words get transcribed a second time on the "You" channel (garbled
-        // duplicates). Apple's voice processing subtracts what the Mac is
-        // currently playing from the mic signal. Ducking of other audio is
-        // minimized (macOS 14+) so the captured meeting audio stays intact.
-        do {
-            try input.setVoiceProcessingEnabled(true)
-            if #available(macOS 14.0, *) {
-                input.voiceProcessingOtherAudioDuckingConfiguration =
-                    AVAudioVoiceProcessingOtherAudioDuckingConfiguration(
-                        enableAdvancedDucking: false, duckingLevel: .min)
-            }
-        } catch {
-            // AEC unavailable (unusual device/driver) — record the raw mic; the
-            // server-side echo filter still cleans the transcript.
-        }
-
-        // Query the format AFTER enabling voice processing — it can change it.
+        // NO voice processing (AEC) here, on purpose. `setVoiceProcessingEnabled`
+        // ties the input to the output unit; this engine deliberately has no
+        // output path (to avoid monitoring/echo), and on macOS that combination
+        // makes the voice processor emit pure SILENCE — recordings looked alive
+        // but contained nothing. Echo/duplicate words from speaker playback are
+        // handled server-side instead (transcribe's token-overlap echo filter).
         let micFormat = input.outputFormat(forBus: 0)
         guard micFormat.sampleRate > 0, micFormat.channelCount > 0 else {
             throw RecorderError.noMicInput
