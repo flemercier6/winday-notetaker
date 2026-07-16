@@ -265,9 +265,14 @@ final class AppViewModel: ObservableObject {
 
     func stopRecordingAndProcess() async {
         guard let id = recordingMeetingID else { return }
+        // Claim the meeting BEFORE the first `await`: at call-end both the
+        // end-monitor timer AND the SCStream's `onExternalStop` can fire, and
+        // each would otherwise pass the guard and run the whole pipeline twice
+        // (double upload/transcribe/summarize). Nulling it now makes the second
+        // caller return at the guard.
+        recordingMeetingID = nil
         stopEndMonitor()
         await recorder.stop()
-        recordingMeetingID = nil
         recordingStartedAt = nil
         recordingMeetCode = nil
         recordingHostBundleID = nil
@@ -283,9 +288,11 @@ final class AppViewModel: ObservableObject {
 
     func cancelRecording() async {
         guard let id = recordingMeetingID else { return }
+        // Claim it before the first `await` (see stopRecordingAndProcess) so a
+        // concurrent stop/cancel returns at the guard instead of double-running.
+        recordingMeetingID = nil
         stopEndMonitor()
         await recorder.stop()
-        recordingMeetingID = nil
         recordingStartedAt = nil
         recordingMeetCode = nil
         recordingHostBundleID = nil

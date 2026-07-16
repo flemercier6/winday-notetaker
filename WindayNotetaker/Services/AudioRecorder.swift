@@ -168,12 +168,34 @@ final class AudioRecorder: NSObject, ObservableObject {
 
         let input = engine.inputNode
 
-        // NO voice processing (AEC) here, on purpose. `setVoiceProcessingEnabled`
-        // ties the input to the output unit; this engine deliberately has no
-        // output path (to avoid monitoring/echo), and on macOS that combination
-        // makes the voice processor emit pure SILENCE — recordings looked alive
-        // but contained nothing. Echo/duplicate words from speaker playback are
-        // handled server-side instead (transcribe's token-overlap echo filter).
+        // Acoustic echo cancellation. Two reasons it belongs here:
+        //  1. Quality — without it, call audio played through the speakers
+        //     re-enters the mic and the remote participants get transcribed a
+        //     second time on the "You" channel (garbled duplicates).
+        //  2. Stability (this is what fixes the end-of-call crash) — enabling
+        //     voice processing pins the input to a FIXED canonical format.
+        //     Without it the engine follows the raw hardware mic, and when the
+        //     browser releases the mic as the call ends the input device
+        //     reconfigures; the recovery re-tap (`recoverEngineIfNeeded`) then
+        //     re-installs with a stale format and `installTap` raises an
+        //     uncatchable format-mismatch exception that aborts the whole app.
+        // Ducking of other audio is minimized (macOS 14+) so the captured
+        // meeting audio stays intact. The server-side echo filter remains as a
+        // second layer. If voice processing is unavailable on this device we
+        // fall back to the raw mic (the recovery path is hardened separately).
+        do {
+            try input.setVoiceProcessingEnabled(true)
+            if #available(macOS 14.0, *) {
+                input.voiceProcessingOtherAudioDuckingConfiguration =
+                    AVAudioVoiceProcessingOtherAudioDuckingConfiguration(
+                        enableAdvancedDucking: false, duckingLevel: .min)
+            }
+        } catch {
+            // AEC unavailable (unusual device/driver) — record the raw mic; the
+            // server-side echo filter still cleans the transcript.
+        }
+
+        // Query the format AFTER enabling voice processing — it can change it.
         let micFormat = input.outputFormat(forBus: 0)
         guard micFormat.sampleRate > 0, micFormat.channelCount > 0 else {
             throw RecorderError.noMicInput
@@ -232,7 +254,14 @@ final class AudioRecorder: NSObject, ObservableObject {
         let micFormat = input.outputFormat(forBus: 0)
         guard micFormat.sampleRate > 0, micFormat.channelCount > 0 else { return }
 
-        input.installTap(onBus: 0, bufferSize: 4096, format: micFormat) { buffer, _ in
+        // Install with `format: nil` (the node's OWN current format) rather than
+        // a separately queried `micFormat`. This runs during a device
+        // transition (the mic being switched or released), when a value queried
+        // even one line earlier can already be stale — and `installTap` with a
+        // format that doesn't match the node raises an uncatchable exception
+        // that aborts the app. `nil` always matches the node; FileMixer adapts
+        // to whatever format the buffers arrive in.
+        input.installTap(onBus: 0, bufferSize: 4096, format: nil) { buffer, _ in
             mixer.writeMic(buffer)
         }
         engine.prepare()
@@ -272,7 +301,8 @@ extension AudioRecorder: SCStreamOutput, SCStreamDelegate {
 private final class FileMixer: @unchecked Sendable {
     var onLevel: (@Sendable (Float) -> Void)?
 
-    private let file: AVAudioFile
+    // Optional so `close()` can release it and finalize the WAV synchronously.
+    private var file: AVAudioFile?
     private let stereoFormat: AVAudioFormat
     private let monoFormat: AVAudioFormat
     private var micToMono: AVAudioConverter?
@@ -311,7 +341,17 @@ private final class FileMixer: @unchecked Sendable {
     }
 
     func close() {
-        lock.lock(); closed = true; lock.unlock()
+        // Release the AVAudioFile here (under the lock, so no in-flight
+        // `writeMic` touches it) so its WAV header / data-size is rewritten and
+        // the file is fully finalized on THIS call — before the pipeline opens
+        // the same URL to compress it. Deferring finalization to `dealloc`
+        // (which can land on the render thread after `stop()` returns) risks the
+        // compressor reading a half-written header and crashing on a malformed
+        // sample buffer.
+        lock.lock()
+        closed = true
+        file = nil
+        lock.unlock()
     }
 
     func writeMic(_ micBuffer: AVAudioPCMBuffer) {
@@ -370,7 +410,7 @@ private final class FileMixer: @unchecked Sendable {
         // 4) Write one buffer to disk.
         lock.lock()
         let isClosed = closed
-        if !isClosed {
+        if !isClosed, let file {
             try? file.write(from: stereo)
             lastWrite = Date()
         }
